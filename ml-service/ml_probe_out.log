@@ -1,5 +1,0 @@
-INFO:     127.0.0.1:64304 - "POST /head/analyze HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64305 - "POST /gaze/analyze HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64307 - "POST /objects/detect HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64310 - "POST /audio/analyze HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64311 - "POST /scoring/calculate HTTP/1.1" 200 OK

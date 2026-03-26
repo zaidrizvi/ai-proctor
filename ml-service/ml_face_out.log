@@ -1,2 +1,0 @@
-INFO:     127.0.0.1:57014 - "POST /face/detect HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57015 - "POST /face/verify HTTP/1.1" 200 OK
