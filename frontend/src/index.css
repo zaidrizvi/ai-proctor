@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+:root {
+  font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+}
+/* hide eyegestures watermark */
+/* hide eyegestures calibration UI */
+#eyegestures-calibration,
+.eyegestures-overlay,
+canvas[data-eyegestures] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --app-bg: #07111f;
+  --app-text: #f3f8ff;
+  --app-muted: #95a7c2;
+  --app-subtle: #6f829f;
+  --app-border: rgba(148, 163, 184, 0.16);
+  --app-gradient:
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.22), transparent 28%),
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.14), transparent 22%),
+    linear-gradient(135deg, rgba(7, 17, 31, 1) 0%, rgba(10, 21, 39, 1) 42%, rgba(4, 11, 23, 1) 100%);
+  --shell-sidebar: rgba(9, 19, 35, 0.88);
+  --shell-topbar: rgba(8, 18, 33, 0.72);
+  --shell-main: rgba(10, 20, 36, 0.7);
+  --panel-bg: rgba(14, 26, 46, 0.92);
+  --panel-soft: rgba(15, 26, 43, 0.78);
+  --panel-strong: #152742;
+  --panel-shadow: 0 24px 70px rgba(2, 6, 23, 0.35);
+  --accent-strong: #0f9bd7;
+  --accent-soft: rgba(14, 165, 233, 0.18);
+  --nav-active-bg: linear-gradient(135deg, rgba(14, 165, 233, 0.18), rgba(59, 130, 246, 0.08));
+  --nav-active-border: rgba(56, 189, 248, 0.34);
+  --nav-icon-bg: rgba(148, 163, 184, 0.08);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --app-bg: #eef4fb;
+  --app-text: #12233d;
+  --app-muted: #516781;
+  --app-subtle: #72859b;
+  --app-border: rgba(15, 23, 42, 0.08);
+  --app-gradient:
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.18), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(249, 115, 22, 0.12), transparent 25%),
+    linear-gradient(135deg, #f8fbff 0%, #edf4fc 44%, #e7eef9 100%);
+  --shell-sidebar: rgba(250, 252, 255, 0.84);
+  --shell-topbar: rgba(255, 255, 255, 0.78);
+  --shell-main: rgba(255, 255, 255, 0.7);
+  --panel-bg: rgba(255, 255, 255, 0.9);
+  --panel-soft: rgba(244, 248, 252, 0.92);
+  --panel-strong: #edf4fb;
+  --panel-shadow: 0 24px 70px rgba(15, 23, 42, 0.08);
+  --accent-strong: #0369a1;
+  --accent-soft: rgba(14, 165, 233, 0.12);
+  --nav-active-bg: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(59, 130, 246, 0.05));
+  --nav-active-border: rgba(14, 165, 233, 0.24);
+  --nav-icon-bg: rgba(15, 23, 42, 0.04);
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  background: var(--app-bg);
+  color: var(--app-text);
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+button,
+input,
+textarea,
+select {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.theme-panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--panel-shadow);
+}
+
+.theme-panel-soft {
+  background: var(--panel-soft);
+  border: 1px solid var(--app-border);
+}
+
+.theme-input {
+  background: var(--panel-strong);
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
+}
+
+.theme-input::placeholder {
+  color: var(--app-subtle);
+}
+
+.theme-primary-btn {
+  background: var(--accent-strong);
+  color: white;
+}
+
+.theme-primary-btn:hover {
+  filter: brightness(1.05);
+}
+
+.theme-soft-btn {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border: 1px solid rgba(14, 165, 233, 0.15);
+}
