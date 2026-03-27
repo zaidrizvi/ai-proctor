@@ -7,9 +7,10 @@ const ALERT_COOLDOWN_MS = 12000;
 const AUDIO_SMOOTHING_WINDOW = 4;
 const MIN_POSITIVE_CHUNKS_TO_ALERT = 2;
 const MIN_AVERAGE_CONFIDENCE_TO_ALERT = 0.28;
-const MIN_BACKEND_CONFIDENCE_FOR_CLIENT_SUPPORT = 0.15;
 const MIN_BACKEND_CONFIDENCE_TO_COUNT = 0.22;
+const MIN_BACKEND_SPEECH_DURATION_MS = 280;
 const IMMEDIATE_BACKEND_CONFIDENCE_THRESHOLD = 0.46;
+const IMMEDIATE_BACKEND_SPEECH_DURATION_MS = 650;
 const CLIENT_RMS_THRESHOLD = 0.014;
 const CLIENT_PEAK_THRESHOLD = 0.07;
 const CLIENT_MIN_ZCR = 0.022;
@@ -205,29 +206,33 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
         const cooldownElapsed = now - lastAlertAtRef.current >= ALERT_COOLDOWN_MS;
         const backendDetected = Boolean(data.speech_detected);
         const backendConfidence = Number(data.speech_confidence || 0);
-        const backendStrongEnough =
-          backendDetected && backendConfidence >= MIN_BACKEND_CONFIDENCE_TO_COUNT;
-        const supportedByClient =
-          clientMetrics.speechLike &&
-          backendConfidence >= MIN_BACKEND_CONFIDENCE_FOR_CLIENT_SUPPORT;
-        const combinedDetected = backendStrongEnough || supportedByClient;
-        const combinedConfidence = Math.max(
-          backendStrongEnough ? backendConfidence : 0,
-          supportedByClient ? clientMetrics.confidence : 0
+        const backendSpeechDurationMs = Number(
+          data.speech_duration_ms || data.speech_run_ms || 0
         );
+        const backendPeakProbability = Number(data.speech_probability_peak || 0);
+        const backendModel = data.vad_model || "audio_vad";
+        const backendStrongEnough =
+          backendDetected &&
+          (
+            backendConfidence >= MIN_BACKEND_CONFIDENCE_TO_COUNT ||
+            backendSpeechDurationMs >= MIN_BACKEND_SPEECH_DURATION_MS
+          );
 
         analysisHistoryRef.current = [
           ...analysisHistoryRef.current,
           {
-            detected: combinedDetected,
-            confidence: combinedConfidence,
+            detected: backendStrongEnough,
+            confidence: backendStrongEnough ? backendConfidence : 0,
           },
         ].slice(-AUDIO_SMOOTHING_WINDOW);
 
         const smoothedDecision = getSmoothedAudioDecision(analysisHistoryRef.current);
         const immediateDetection =
           backendStrongEnough &&
-          backendConfidence >= IMMEDIATE_BACKEND_CONFIDENCE_THRESHOLD;
+          (
+            backendConfidence >= IMMEDIATE_BACKEND_CONFIDENCE_THRESHOLD ||
+            backendSpeechDurationMs >= IMMEDIATE_BACKEND_SPEECH_DURATION_MS
+          );
 
         if (smoothedDecision.detected || immediateDetection) {
           setStatus("detected");
@@ -236,18 +241,20 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
             lastAlertAtRef.current = now;
             onAudioDetected?.({
               ...data,
-              speech_detected: combinedDetected,
+              speech_detected: backendStrongEnough,
               speech_confidence: Number(
                 Math.max(
                   smoothedDecision.averageConfidence,
-                  backendStrongEnough ? backendConfidence : 0,
-                  supportedByClient ? clientMetrics.confidence : 0
+                  backendStrongEnough ? backendConfidence : 0
                 ).toFixed(4)
               ),
+              vad_model: backendModel,
+              speech_probability_peak: Number(backendPeakProbability.toFixed(4)),
+              speech_duration_ms: backendSpeechDurationMs,
               client_rms: Number(clientMetrics.rms.toFixed(4)),
               client_peak: Number(clientMetrics.peak.toFixed(4)),
               client_zcr: Number(clientMetrics.zcr.toFixed(4)),
-              client_support_detected: supportedByClient,
+              client_voice_like: clientMetrics.speechLike,
               temporal_positive_chunks: smoothedDecision.positiveCount,
               temporal_window_size: analysisHistoryRef.current.length,
               temporal_smoothed: smoothedDecision.detected,
@@ -362,9 +369,9 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
         <p className="text-gray-500 text-xs">
           Audio:{" "}
           {status === "listening"
-            ? "WebRTC VAD active"
+            ? "Silero VAD active"
             : status === "detected"
-            ? "Speech detected"
+            ? "Voice activity detected"
             : status === "denied"
             ? "Mic denied"
             : status === "unsupported"

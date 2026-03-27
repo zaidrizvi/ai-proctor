@@ -1,22 +1,27 @@
 import base64
 import io
 import os
+import threading
 import wave
+from functools import lru_cache
 
 import numpy as np
-import webrtcvad
+import torch
+from silero_vad import get_speech_timestamps, load_silero_vad
 
 
-SUPPORTED_VAD_SAMPLE_RATES = {8000, 16000, 32000, 48000}
-VAD_FRAME_DURATION_MS = 30
-VAD_MODE = int(os.getenv("WEBRTC_VAD_MODE", "2"))
-MIN_SPEECH_RUN_FRAMES = 3
-TONE_LIKE_FLATNESS_THRESHOLD = 1e-3
-TONE_LIKE_RATIO_THRESHOLD = 0.85
-TONE_LIKE_FREQ_STD_HZ_THRESHOLD = 60.0
-MIN_SPEECH_BAND_RATIO = 0.38
-MIN_SPEECH_FLUX = 0.022
-MIN_SPEECH_CONFIDENCE = 0.27
+TARGET_SAMPLE_RATE = 16000
+MIN_SUPPORTED_SAMPLE_RATE = 8000
+MIN_ANALYSIS_WINDOW_MS = 250
+MIN_VOLUME_LEVEL = 0.0035
+SILERO_THRESHOLD = float(os.getenv("SILERO_VAD_THRESHOLD", "0.5"))
+SILERO_NEG_THRESHOLD = float(os.getenv("SILERO_VAD_NEG_THRESHOLD", "0.35"))
+SILERO_MIN_SPEECH_MS = int(os.getenv("SILERO_MIN_SPEECH_MS", "250"))
+SILERO_MIN_SILENCE_MS = int(os.getenv("SILERO_MIN_SILENCE_MS", "120"))
+SILERO_SPEECH_PAD_MS = int(os.getenv("SILERO_SPEECH_PAD_MS", "40"))
+MIN_SPEECH_RATIO = float(os.getenv("SILERO_MIN_SPEECH_RATIO", "0.08"))
+MIN_SPEECH_CONFIDENCE = float(os.getenv("SILERO_MIN_CONFIDENCE", "0.28"))
+_VAD_MODEL_LOCK = threading.Lock()
 
 
 def decode_wav_base64(audio_payload: str) -> tuple[np.ndarray, int]:
@@ -42,12 +47,8 @@ def decode_wav_base64(audio_payload: str) -> tuple[np.ndarray, int]:
         raise ValueError("Only 16-bit PCM WAV audio is supported")
     if channels < 1:
         raise ValueError("WAV audio must contain at least one channel")
-    if sample_rate < 8000:
+    if sample_rate < MIN_SUPPORTED_SAMPLE_RATE:
         raise ValueError("WAV sample rate must be at least 8000 Hz")
-    if sample_rate not in SUPPORTED_VAD_SAMPLE_RATES:
-        raise ValueError(
-            "WebRTC VAD requires WAV sample rate of 8000, 16000, 32000, or 48000 Hz"
-        )
 
     samples = np.frombuffer(raw_frames, dtype=np.int16).astype(np.float32) / 32768.0
 
@@ -59,167 +60,153 @@ def decode_wav_base64(audio_payload: str) -> tuple[np.ndarray, int]:
 
 def analyze_audio_chunk(samples: np.ndarray, sample_rate: int) -> dict:
     if samples.size == 0:
-        return {
-            "speech_detected": False,
-            "volume_level": 0.0,
-            "speech_confidence": 0.0,
-            "voiced_ratio": 0.0,
-            "analysis_window_ms": 0,
-        }
+        return _empty_audio_analysis()
 
     clipped_samples = np.clip(samples, -1.0, 1.0)
     rms = float(np.sqrt(np.mean(np.square(clipped_samples))))
     analysis_window_ms = int((len(clipped_samples) / max(sample_rate, 1)) * 1000)
 
-    if analysis_window_ms < 250:
+    if analysis_window_ms < MIN_ANALYSIS_WINDOW_MS:
         return {
-            "speech_detected": False,
+            **_empty_audio_analysis(),
             "volume_level": round(rms, 4),
-            "speech_confidence": 0.0,
-            "voiced_ratio": 0.0,
             "analysis_window_ms": analysis_window_ms,
         }
 
-    frame_length = max(int(sample_rate * (VAD_FRAME_DURATION_MS / 1000.0)), 1)
-    usable_samples = clipped_samples[: len(clipped_samples) - (len(clipped_samples) % frame_length)]
+    if rms < MIN_VOLUME_LEVEL:
+        return {
+            **_empty_audio_analysis(),
+            "volume_level": round(rms, 4),
+            "analysis_window_ms": analysis_window_ms,
+            "resampled_sample_rate": TARGET_SAMPLE_RATE,
+            "vad_model": "silero_vad",
+        }
 
-    if usable_samples.size == 0:
-        usable_samples = clipped_samples
-        frame_length = len(clipped_samples)
+    resampled_samples = _resample_audio(clipped_samples, sample_rate, TARGET_SAMPLE_RATE)
+    audio_tensor = torch.from_numpy(resampled_samples).float().contiguous()
+    timestamps, speech_probabilities = _run_silero_analysis(audio_tensor)
 
-    frames = usable_samples.reshape(-1, frame_length)
-    frame_rms = np.sqrt(np.mean(np.square(frames), axis=1))
-    zero_crossings = np.mean(np.abs(np.diff(np.sign(frames), axis=1)), axis=1) / 2.0
-    pcm_frames = (np.clip(frames, -1.0, 1.0) * 32767.0).astype(np.int16)
-    vad = webrtcvad.Vad(VAD_MODE)
-    spectral_flatness, dominant_freq_hz, speech_band_ratio, spectral_flux = _spectral_features(
-        frames, sample_rate
+    mean_probability = float(np.mean(speech_probabilities)) if speech_probabilities.size else 0.0
+    peak_probability = float(np.max(speech_probabilities)) if speech_probabilities.size else 0.0
+    active_probabilities = speech_probabilities[speech_probabilities >= SILERO_THRESHOLD]
+    mean_active_probability = (
+        float(np.mean(active_probabilities)) if active_probabilities.size else 0.0
     )
+    probability_ratio = float(np.mean(speech_probabilities >= SILERO_THRESHOLD)) if speech_probabilities.size else 0.0
 
-    vad_mask = np.array(
-        [vad.is_speech(frame.tobytes(), sample_rate) for frame in pcm_frames],
-        dtype=bool,
-    )
-    energy_mask = frame_rms > max(0.0045, rms * 0.28)
-    zcr_mask = (zero_crossings > 0.01) & (zero_crossings < 0.22)
-    speech_band_mask = speech_band_ratio >= MIN_SPEECH_BAND_RATIO
-    flux_mask = spectral_flux >= MIN_SPEECH_FLUX
-    voiced_mask = vad_mask & energy_mask & zcr_mask & speech_band_mask & flux_mask
-
-    vad_ratio = float(np.mean(vad_mask)) if vad_mask.size else 0.0
-    voiced_ratio = float(np.mean(voiced_mask)) if voiced_mask.size else 0.0
-    speech_run_frames = _longest_true_run(voiced_mask)
-    vad_run_frames = _longest_true_run(vad_mask)
-    speech_run_ms = speech_run_frames * VAD_FRAME_DURATION_MS
-    vad_run_ms = vad_run_frames * VAD_FRAME_DURATION_MS
-    voiced_flatness = spectral_flatness[voiced_mask]
-    voiced_freqs = dominant_freq_hz[voiced_mask]
-    voiced_band_ratio = speech_band_ratio[voiced_mask]
-    voiced_flux = spectral_flux[voiced_mask]
-    tone_like_ratio = float(
-        np.mean(voiced_flatness < TONE_LIKE_FLATNESS_THRESHOLD)
-    ) if voiced_flatness.size else 0.0
-    dominant_freq_std_hz = float(np.std(voiced_freqs)) if voiced_freqs.size else 0.0
-    avg_speech_band_ratio = float(np.mean(voiced_band_ratio)) if voiced_band_ratio.size else 0.0
-    avg_spectral_flux = float(np.mean(voiced_flux)) if voiced_flux.size else 0.0
-    likely_tone = (
-        voiced_flatness.size > 0 and
-        tone_like_ratio >= TONE_LIKE_RATIO_THRESHOLD and
-        dominant_freq_std_hz <= TONE_LIKE_FREQ_STD_HZ_THRESHOLD
-    )
-    speech_confidence = float(
-        min(
-            1.0,
-            (max(voiced_ratio, vad_ratio * 0.9) * 0.58) +
-            (min(max(speech_run_ms, vad_run_ms) / 210.0, 1.0) * 0.22) +
-            (min(rms / 0.06, 1.0) * 0.12) +
-            (min(avg_speech_band_ratio / 0.55, 1.0) * 0.08),
+    speech_duration_samples = int(sum(segment["end"] - segment["start"] for segment in timestamps))
+    speech_duration_ms = int(round((speech_duration_samples / TARGET_SAMPLE_RATE) * 1000))
+    longest_segment_ms = int(
+        round(
+            max((segment["end"] - segment["start"]) for segment in timestamps) * 1000 / TARGET_SAMPLE_RATE
         )
+    ) if timestamps else 0
+    speech_ratio = float(
+        speech_duration_samples / max(int(audio_tensor.numel()), 1)
     )
 
-    vad_fallback_detected = (
-        vad_ratio >= 0.22 and
-        vad_run_frames >= 3 and
-        rms >= 0.0045 and
-        avg_speech_band_ratio >= 0.34 and
-        avg_spectral_flux >= 0.019 and
-        not likely_tone and
-        speech_confidence >= 0.24
+    speech_confidence = clamp(
+        (min(mean_active_probability / 0.82, 1.0) * 0.45) +
+        (min(peak_probability / 0.9, 1.0) * 0.25) +
+        (min(speech_ratio / 0.35, 1.0) * 0.2) +
+        (min(longest_segment_ms / 650.0, 1.0) * 0.1),
+        0.0,
+        1.0,
     )
-    energy_fallback_detected = (
-        rms >= 0.016 and
-        vad_ratio >= 0.2 and
-        vad_run_frames >= 3 and
-        avg_speech_band_ratio >= 0.36 and
-        avg_spectral_flux >= 0.025 and
-        not likely_tone and
-        speech_confidence >= 0.27
-    )
-
-    speech_detected = (
-        (
-            voiced_ratio >= 0.12 and
-            speech_run_frames >= MIN_SPEECH_RUN_FRAMES and
-            rms >= 0.0045 and
-            avg_speech_band_ratio >= MIN_SPEECH_BAND_RATIO and
-            avg_spectral_flux >= MIN_SPEECH_FLUX and
-            speech_confidence >= MIN_SPEECH_CONFIDENCE
-        ) or
-        vad_fallback_detected or
-        energy_fallback_detected
-    )
+    speech_detected = bool(timestamps) and speech_ratio >= MIN_SPEECH_RATIO and speech_confidence >= MIN_SPEECH_CONFIDENCE
 
     return {
         "speech_detected": speech_detected,
         "volume_level": round(rms, 4),
         "speech_confidence": round(speech_confidence, 4),
-        "vad_ratio": round(vad_ratio, 4),
-        "voiced_ratio": round(voiced_ratio, 4),
+        "vad_ratio": round(probability_ratio, 4),
+        "voiced_ratio": round(speech_ratio, 4),
         "analysis_window_ms": analysis_window_ms,
-        "speech_run_ms": speech_run_ms,
-        "vad_run_ms": vad_run_ms,
-        "vad_mode": VAD_MODE,
-        "tone_like_ratio": round(tone_like_ratio, 4),
-        "speech_band_ratio": round(avg_speech_band_ratio, 4),
-        "spectral_flux": round(avg_spectral_flux, 4),
-        "vad_fallback_detected": vad_fallback_detected,
-        "energy_fallback_detected": energy_fallback_detected,
+        "speech_duration_ms": speech_duration_ms,
+        "speech_run_ms": longest_segment_ms,
+        "vad_run_ms": longest_segment_ms,
+        "speech_probability_mean": round(mean_probability, 4),
+        "speech_probability_peak": round(peak_probability, 4),
+        "resampled_sample_rate": TARGET_SAMPLE_RATE,
+        "vad_model": "silero_vad",
+        "vad_threshold": round(SILERO_THRESHOLD, 3),
     }
 
 
-def _longest_true_run(mask: np.ndarray) -> int:
-    longest = 0
-    current = 0
+def _empty_audio_analysis() -> dict:
+    return {
+        "speech_detected": False,
+        "volume_level": 0.0,
+        "speech_confidence": 0.0,
+        "vad_ratio": 0.0,
+        "voiced_ratio": 0.0,
+        "analysis_window_ms": 0,
+        "speech_duration_ms": 0,
+        "speech_run_ms": 0,
+        "vad_run_ms": 0,
+        "speech_probability_mean": 0.0,
+        "speech_probability_peak": 0.0,
+        "resampled_sample_rate": TARGET_SAMPLE_RATE,
+        "vad_model": "silero_vad",
+        "vad_threshold": round(SILERO_THRESHOLD, 3),
+    }
 
-    for flag in mask:
-        if flag:
-            current += 1
-            longest = max(longest, current)
-        else:
-            current = 0
 
-    return longest
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return min(maximum, max(minimum, value))
 
 
-def _spectral_features(frames: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    window = np.hanning(frames.shape[1]).astype(np.float32)
-    spectrum = np.abs(np.fft.rfft(frames * window, axis=1)) ** 2
-    flatness = np.exp(np.mean(np.log(spectrum + 1e-12), axis=1)) / np.mean(spectrum + 1e-12, axis=1)
-    freqs = np.fft.rfftfreq(frames.shape[1], d=1.0 / sample_rate)
-    dominant_freq = freqs[np.argmax(spectrum, axis=1)]
-    speech_band = (freqs >= 85.0) & (freqs <= 4000.0)
-    speech_band_energy = np.sum(spectrum[:, speech_band], axis=1)
-    total_energy = np.sum(spectrum, axis=1) + 1e-12
-    speech_band_ratio = speech_band_energy / total_energy
+@lru_cache(maxsize=1)
+def _get_vad_model():
+    torch.set_num_threads(1)
+    return load_silero_vad(onnx=False)
 
-    normalized_spectrum = spectrum / total_energy[:, np.newaxis]
-    previous_spectrum = np.roll(normalized_spectrum, 1, axis=0)
-    previous_spectrum[0] = normalized_spectrum[0]
-    spectral_flux = np.mean(np.maximum(normalized_spectrum - previous_spectrum, 0.0), axis=1)
 
-    return (
-        flatness.astype(np.float32),
-        dominant_freq.astype(np.float32),
-        speech_band_ratio.astype(np.float32),
-        spectral_flux.astype(np.float32),
-    )
+def _resample_audio(
+    samples: np.ndarray,
+    source_rate: int,
+    target_rate: int,
+) -> np.ndarray:
+    if source_rate == target_rate or samples.size == 0:
+        return samples.astype(np.float32, copy=False)
+
+    source_positions = np.arange(samples.size, dtype=np.float32)
+    target_size = max(int(round(samples.size * (target_rate / source_rate))), 1)
+    target_positions = np.linspace(0, samples.size - 1, num=target_size, dtype=np.float32)
+    return np.interp(target_positions, source_positions, samples).astype(np.float32)
+
+
+@torch.inference_mode()
+def _collect_speech_probabilities(audio_tensor: torch.Tensor, model) -> np.ndarray:
+    window_size = 512
+    model.reset_states()
+    probabilities = []
+
+    for start in range(0, int(audio_tensor.numel()), window_size):
+        chunk = audio_tensor[start:start + window_size]
+        if int(chunk.numel()) < window_size:
+            chunk = torch.nn.functional.pad(chunk, (0, window_size - int(chunk.numel())))
+        probabilities.append(float(model(chunk, TARGET_SAMPLE_RATE).item()))
+
+    model.reset_states()
+    return np.asarray(probabilities, dtype=np.float32)
+
+
+def _run_silero_analysis(audio_tensor: torch.Tensor) -> tuple[list[dict], np.ndarray]:
+    model = _get_vad_model()
+
+    with _VAD_MODEL_LOCK:
+        timestamps = get_speech_timestamps(
+            audio_tensor,
+            model,
+            threshold=SILERO_THRESHOLD,
+            neg_threshold=SILERO_NEG_THRESHOLD,
+            sampling_rate=TARGET_SAMPLE_RATE,
+            min_speech_duration_ms=SILERO_MIN_SPEECH_MS,
+            min_silence_duration_ms=SILERO_MIN_SILENCE_MS,
+            speech_pad_ms=SILERO_SPEECH_PAD_MS,
+            return_seconds=False,
+        )
+        speech_probabilities = _collect_speech_probabilities(audio_tensor, model)
+
+    return timestamps, speech_probabilities

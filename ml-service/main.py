@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from routers import audio, face, gaze, head_pose, object_detect, scoring
+from routers import audio, face, gaze, head_pose, object_detect
 
 app = FastAPI(title="AIProctor ML Service", version="1.0.0")
 
@@ -24,7 +24,6 @@ app.include_router(gaze.router, prefix="/gaze", tags=["Gaze"])
 app.include_router(head_pose.router, prefix="/head", tags=["Head Pose"])
 app.include_router(object_detect.router, prefix="/objects", tags=["Object Detection"])
 app.include_router(audio.router, prefix="/audio", tags=["Audio"])
-app.include_router(scoring.router, prefix="/scoring", tags=["Scoring"])
 
 
 @app.get("/")
