@@ -6,6 +6,7 @@ const NO_FACE_STREAK_TO_ALERT = 1;
 const FACE_RECOVERY_STREAK = 1;
 const MULTIPLE_FACES_STREAK_TO_ALERT = 3;
 const HEAD_TURN_STREAK_TO_ALERT = 2;
+const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
 const GAZE_AWAY_STREAK_TO_ALERT = 3;
 const NO_FRAME_STREAK_TO_ALERT = 2;
 const FACE_MISMATCH_STREAK_TO_ALERT = 2;
@@ -26,7 +27,7 @@ const useProctor = ({
   headPoseBaseline = null,
   gazeBaseline = null,
   onAlert,
-  intervalMs = 5000,
+  intervalMs = 800,
   verifyIntervalMs = 45000,
 }) => {
   const intervalRef = useRef(null);
@@ -129,17 +130,14 @@ const useProctor = ({
     }
 
     try {
-      const requests = [
+      const criticalRequests = [
         { key: "face", promise: axios.post(`${ML_URL}/face/detect`, { frame }) },
-        { key: "objects", promise: axios.post(`${ML_URL}/objects/detect`, { frame }) },
-      ];
-
-      requests.push(
         {
           key: "head",
           promise: axios.post(`${ML_URL}/head/analyze`, {
             frame,
             baseline: headPoseBaseline,
+            tracker_id: sessionId || examId || "default",
           }),
         },
         {
@@ -148,11 +146,14 @@ const useProctor = ({
             frame,
             baseline: gazeBaseline,
           }),
-        }
-      );
+        },
+      ];
+      const backgroundRequests = [
+        { key: "objects", promise: axios.post(`${ML_URL}/objects/detect`, { frame }) },
+      ];
 
       if (shouldVerifyIdentity) {
-        requests.push({
+        backgroundRequests.push({
           key: "verify",
           promise: axios.post(`${ML_URL}/face/verify`, {
             frame,
@@ -162,27 +163,31 @@ const useProctor = ({
         });
       }
 
-      const results = await Promise.allSettled(requests.map((request) => request.promise));
-      const resultMap = Object.fromEntries(
-        requests.map((request, index) => [request.key, results[index]])
+      const criticalResults = await Promise.allSettled(
+        criticalRequests.map((request) => request.promise)
       );
-      const faceRes = resultMap.face;
-      const headRes = resultMap.head;
-      const gazeRes = resultMap.gaze;
-      const objectRes = resultMap.objects;
-      const verifyRes = resultMap.verify;
+      const criticalResultMap = Object.fromEntries(
+        criticalRequests.map((request, index) => [request.key, criticalResults[index]])
+      );
+      const faceRes = criticalResultMap.face;
+      const headRes = criticalResultMap.head;
+      const gazeRes = criticalResultMap.gaze;
 
-      results.forEach((result, index) => {
+      criticalResults.forEach((result, index) => {
         if (result.status === "rejected") {
-          console.warn(`ML ${requests[index].key} check failed:`, result.reason?.message || result.reason);
+          console.warn(
+            `ML ${criticalRequests[index].key} check failed:`,
+            result.reason?.message || result.reason
+          );
         }
       });
-      const completedAnalysisCount = [faceRes, headRes, gazeRes, objectRes].filter(
+
+      const criticalCompletedCount = [faceRes, headRes, gazeRes].filter(
         (result) => result?.status === "fulfilled"
       ).length;
       const now = Date.now();
 
-      if (completedAnalysisCount === 0) {
+      if (criticalCompletedCount === 0) {
         console.warn("ML analysis failed: no vision checks completed");
         if (now - lastAlertAtRef.current.mlUnavailable >= 30000) {
           lastAlertAtRef.current.mlUnavailable = now;
@@ -202,6 +207,9 @@ const useProctor = ({
       let primaryFaceRecovered = false;
       let faceMultipleFacesCandidate = false;
       let objectMultipleFacesCandidate = false;
+      let gazeAvailable = false;
+      let gazeLookingAway = false;
+      let gazeDirection = "side";
 
       if (faceRes.status === "fulfilled") {
         const face = faceRes.value.data;
@@ -212,46 +220,6 @@ const useProctor = ({
         detectorNoFace = noFaceFromDetector;
         primaryFaceRecovered = Boolean(face.face_detected) && !noFaceFromDetector;
         faceMultipleFacesCandidate = multipleFaces;
-      }
-
-      if (headRes?.status === "fulfilled") {
-        const head = headRes.value.data;
-        const headTurned = head.event === "head_turned";
-
-        if (headTurned) {
-          streaksRef.current.headTurned += 1;
-        } else {
-          streaksRef.current.headTurned = 0;
-        }
-
-        if (
-          streaksRef.current.headTurned >= HEAD_TURN_STREAK_TO_ALERT &&
-          !activeFlagsRef.current.headTurned &&
-          now - lastAlertAtRef.current.headTurned >= HEAD_TURN_ALERT_COOLDOWN_MS
-        ) {
-          activeFlagsRef.current.headTurned = true;
-          lastAlertAtRef.current.headTurned = now;
-          countersRef.current.head_turned += 1;
-          onAlert?.("head_turned", "medium", "Student turned head away from screen");
-        } else if (!headTurned) {
-          activeFlagsRef.current.headTurned = false;
-        }
-      }
-
-      let gazeAvailable = false;
-      let gazeLookingAway = false;
-      let gazeDirection = "side";
-
-      if (gazeRes?.status === "fulfilled") {
-        const gaze = gazeRes.value.data;
-        gazeAvailable = gaze.tracking_available && gaze.face_detected;
-        gazeLookingAway = gaze.event === "gaze_away";
-
-        const horizontalValue = gaze.horizontal_angle_delta ?? gaze.horizontal_angle;
-        const verticalValue = gaze.vertical_angle_delta ?? gaze.vertical_angle;
-        gazeDirection = Math.abs(horizontalValue) >= Math.abs(verticalValue)
-          ? (horizontalValue > 0 ? "right" : "left")
-          : (verticalValue > 0 ? "down" : "up");
       }
 
       const noFace = faceDetectorAvailable && detectorNoFace;
@@ -279,6 +247,47 @@ const useProctor = ({
         noFrameStreakRef.current = 0;
       }
 
+      if (headRes?.status === "fulfilled") {
+        const head = headRes.value.data;
+        const headTurned = head.event === "head_turned";
+        const obviousTurn = Boolean(head.obvious_turn);
+
+        if (headTurned) {
+          streaksRef.current.headTurned += 1;
+        } else {
+          streaksRef.current.headTurned = 0;
+        }
+
+        const headTurnThreshold = obviousTurn
+          ? STRONG_HEAD_TURN_STREAK_TO_ALERT
+          : HEAD_TURN_STREAK_TO_ALERT;
+
+        if (
+          streaksRef.current.headTurned >= headTurnThreshold &&
+          !activeFlagsRef.current.headTurned &&
+          now - lastAlertAtRef.current.headTurned >= HEAD_TURN_ALERT_COOLDOWN_MS
+        ) {
+          activeFlagsRef.current.headTurned = true;
+          lastAlertAtRef.current.headTurned = now;
+          countersRef.current.head_turned += 1;
+          onAlert?.("head_turned", "medium", "Student turned head away from screen");
+        } else if (!headTurned) {
+          activeFlagsRef.current.headTurned = false;
+        }
+      }
+
+      if (gazeRes?.status === "fulfilled") {
+        const gaze = gazeRes.value.data;
+        gazeAvailable = gaze.tracking_available && gaze.face_detected;
+        gazeLookingAway = gaze.event === "gaze_away";
+
+        const horizontalValue = gaze.horizontal_angle_delta ?? gaze.horizontal_angle;
+        const verticalValue = gaze.vertical_angle_delta ?? gaze.vertical_angle;
+        gazeDirection = Math.abs(horizontalValue) >= Math.abs(verticalValue)
+          ? (horizontalValue > 0 ? "right" : "left")
+          : (verticalValue > 0 ? "down" : "up");
+      }
+
       if (gazeLookingAway) {
         streaksRef.current.gazeAway += 1;
       } else {
@@ -299,6 +308,24 @@ const useProctor = ({
       } else if (!gazeLookingAway) {
         activeFlagsRef.current.gazeAway = false;
       }
+
+      const backgroundResults = await Promise.allSettled(
+        backgroundRequests.map((request) => request.promise)
+      );
+      const backgroundResultMap = Object.fromEntries(
+        backgroundRequests.map((request, index) => [request.key, backgroundResults[index]])
+      );
+      const objectRes = backgroundResultMap.objects;
+      const verifyRes = backgroundResultMap.verify;
+
+      backgroundResults.forEach((result, index) => {
+        if (result.status === "rejected") {
+          console.warn(
+            `ML ${backgroundRequests[index].key} check failed:`,
+            result.reason?.message || result.reason
+          );
+        }
+      });
 
       if (objectRes?.status === "fulfilled") {
         const objects = objectRes.value.data;

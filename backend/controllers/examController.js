@@ -1,6 +1,6 @@
 import Exam from "../models/Exam.js";
 import ExamSession from "../models/ExamSession.js";
-import generateMCQ from "../utils/generateMCQ.js";
+import generateMCQ, { MCQGenerationError } from "../utils/generateMCQ.js";
 import {
   examOwnedBy,
   getStudentExamAccessError,
@@ -117,6 +117,12 @@ export const createExam = async (req, res) => {
     res.status(201).json(exam);
   } catch (error) {
     console.error("Create exam error:", error);
+    if (error instanceof MCQGenerationError) {
+      return res.status(error.statusCode || 503).json({
+        message: error.message,
+      });
+    }
+
     res.status(500).json({ message: error.message || "Server error" });
   }
 };

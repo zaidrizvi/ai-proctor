@@ -4,6 +4,8 @@ import numpy as np
 import cv2
 import sys
 import os
+import time
+from threading import Lock
 import mediapipe as mp
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.core.base_options import BaseOptions
@@ -12,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.frame_utils import base64_to_frame
 
 router = APIRouter()
-_face_landmarker = None
+_image_face_landmarker = None
 _model_path = os.getenv(
     "MEDIAPIPE_FACE_LANDMARKER_MODEL",
     os.path.join(
@@ -26,15 +28,34 @@ ABS_YAW_THRESHOLD = 24
 ABS_PITCH_THRESHOLD = 17
 ABS_NOSE_OFFSET_THRESHOLD = 0.18
 ABS_ROLL_THRESHOLD = 24
+ABS_DOWNWARD_PITCH_THRESHOLD = 18
+ABS_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.085
 
 DELTA_YAW_THRESHOLD = 12
 DELTA_PITCH_THRESHOLD = 16
 DELTA_NOSE_OFFSET_THRESHOLD = 0.16
 DELTA_ROLL_THRESHOLD = 20
+DELTA_DOWNWARD_PITCH_THRESHOLD = 11
+DELTA_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.06
 DELTA_YAW_DEADZONE = 4.0
 DELTA_PITCH_DEADZONE = 5.5
 DELTA_ROLL_DEADZONE = 5.0
 DELTA_NOSE_DEADZONE = 0.045
+POSE_SMOOTHING_ALPHA = 0.58
+LOW_QUALITY_POSE_SMOOTHING_ALPHA = 0.4
+STRONG_SIGNAL_POSE_SMOOTHING_ALPHA = 0.82
+TRACKER_STATE_TTL_SECONDS = 10.0
+
+POSE_KEYS = (
+    "pitch",
+    "yaw",
+    "roll",
+    "nose_offset_x",
+    "nose_offset_y",
+)
+
+_tracker_states: dict[str, dict] = {}
+_tracker_state_lock = Lock()
 
 
 class HeadPoseBaseline(BaseModel):
@@ -48,35 +69,71 @@ class HeadPoseBaseline(BaseModel):
 class FrameRequest(BaseModel):
     frame: str
     baseline: HeadPoseBaseline | None = None
+    tracker_id: str | None = None
 
 
 def get_face_landmarker():
-    global _face_landmarker
+    global _image_face_landmarker
 
-    if _face_landmarker is None:
-        if not os.path.exists(_model_path):
-            raise RuntimeError(
-                f"MediaPipe face landmarker model not found at '{_model_path}'"
-            )
-
-        options = vision.FaceLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=_model_path),
-            running_mode=vision.RunningMode.IMAGE,
-            num_faces=1,
-            min_face_detection_confidence=0.5,
-            min_face_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
-            output_face_blendshapes=False,
-            output_facial_transformation_matrixes=False,
+    if _image_face_landmarker is None:
+        _image_face_landmarker = vision.FaceLandmarker.create_from_options(
+            _build_landmarker_options(vision.RunningMode.IMAGE)
         )
-        _face_landmarker = vision.FaceLandmarker.create_from_options(options)
 
-    return _face_landmarker
+    return _image_face_landmarker
 
 
-def get_head_pose(frame: np.ndarray):
-    h, w = frame.shape[:2]
+def _build_landmarker_options(running_mode):
+    if not os.path.exists(_model_path):
+        raise RuntimeError(
+            f"MediaPipe face landmarker model not found at '{_model_path}'"
+        )
 
+    return vision.FaceLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=_model_path),
+        running_mode=running_mode,
+        num_faces=1,
+        min_face_detection_confidence=0.5,
+        min_face_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+        output_face_blendshapes=False,
+        output_facial_transformation_matrixes=True,
+    )
+
+
+def _create_video_face_landmarker():
+    return vision.FaceLandmarker.create_from_options(
+        _build_landmarker_options(vision.RunningMode.VIDEO)
+    )
+
+
+def _extract_pose_from_landmark_transform(result) -> dict | None:
+    if not getattr(result, "facial_transformation_matrixes", None):
+        return None
+
+    transform = np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)
+    if transform.shape[0] < 3 or transform.shape[1] < 3:
+        return None
+
+    rotation_mat = transform[:3, :3].copy()
+    scales = np.linalg.norm(rotation_mat, axis=0)
+    scales[scales < 1e-6] = 1.0
+    rotation_mat = rotation_mat / scales
+
+    if np.linalg.det(rotation_mat) < 0:
+        rotation_mat[:, 2] *= -1.0
+
+    pose_mat = cv2.hconcat([rotation_mat, np.zeros((3, 1), dtype=np.float64)])
+    _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(pose_mat)
+
+    return {
+        "pitch": _normalize_angle(float(euler_angles[0][0])),
+        "yaw": _normalize_angle(float(euler_angles[1][0])),
+        "roll": _normalize_angle(float(euler_angles[2][0])),
+    }
+
+
+def _extract_pose_from_landmarks(landmarks, width: int, height: int) -> dict | None:
     model_points = np.array([
         (0.0, 0.0, 0.0),
         (0.0, -330.0, -65.0),
@@ -86,8 +143,8 @@ def get_head_pose(frame: np.ndarray):
         (150.0, -150.0, -125.0),
     ], dtype=np.float64)
 
-    focal_length = w
-    center = (w / 2, h / 2)
+    focal_length = width
+    center = (width / 2, height / 2)
     camera_matrix = np.array([
         [focal_length, 0, center[0]],
         [0, focal_length, center[1]],
@@ -95,22 +152,13 @@ def get_head_pose(frame: np.ndarray):
     ], dtype=np.float64)
     dist_coeffs = np.zeros((4, 1), dtype=np.float64)
 
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-    result = get_face_landmarker().detect(mp_image)
-
-    if not result.face_landmarks:
-        return None
-
-    landmarks = result.face_landmarks[0]
-    nose_tip = landmarks[1]
     image_points = np.array([
-        (landmarks[1].x * w, landmarks[1].y * h),
-        (landmarks[152].x * w, landmarks[152].y * h),
-        (landmarks[263].x * w, landmarks[263].y * h),
-        (landmarks[33].x * w, landmarks[33].y * h),
-        (landmarks[287].x * w, landmarks[287].y * h),
-        (landmarks[57].x * w, landmarks[57].y * h),
+        (landmarks[1].x * width, landmarks[1].y * height),
+        (landmarks[152].x * width, landmarks[152].y * height),
+        (landmarks[263].x * width, landmarks[263].y * height),
+        (landmarks[33].x * width, landmarks[33].y * height),
+        (landmarks[287].x * width, landmarks[287].y * height),
+        (landmarks[57].x * width, landmarks[57].y * height),
     ], dtype=np.float64)
 
     success, rotation_vec, translation_vec = cv2.solvePnP(
@@ -127,20 +175,150 @@ def get_head_pose(frame: np.ndarray):
     pose_mat = cv2.hconcat([rotation_mat, translation_vec])
     _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(pose_mat)
 
-    pitch = _normalize_angle(float(euler_angles[0][0]))
-    yaw = _normalize_angle(float(euler_angles[1][0]))
-    roll = _normalize_angle(float(euler_angles[2][0]))
-    nose_offset_x = float(nose_tip.x - 0.5)
-    nose_offset_y = float(nose_tip.y - 0.5)
-
     return {
-        "pitch": pitch,
-        "yaw": yaw,
-        "roll": roll,
-        "nose_offset_x": nose_offset_x,
-        "nose_offset_y": nose_offset_y,
-        "pose_quality": _estimate_pose_quality(pitch, yaw, roll, nose_offset_x, nose_offset_y),
+        "pitch": _normalize_angle(float(euler_angles[0][0])),
+        "yaw": _normalize_angle(float(euler_angles[1][0])),
+        "roll": _normalize_angle(float(euler_angles[2][0])),
     }
+
+
+def _cleanup_tracker_states(now: float):
+    expired_ids = [
+        tracker_id
+        for tracker_id, state in _tracker_states.items()
+        if now - state["last_seen"] > TRACKER_STATE_TTL_SECONDS
+    ]
+    for tracker_id in expired_ids:
+        state = _tracker_states.pop(tracker_id, None)
+        state_lock = state.get("lock") if state else None
+        if state_lock is None:
+            continue
+        with state_lock:
+            state["landmarker"].close()
+
+
+def _get_tracker_state(tracker_id: str | None):
+    if not tracker_id:
+        return None
+
+    now = time.monotonic()
+    with _tracker_state_lock:
+        _cleanup_tracker_states(now)
+        state = _tracker_states.get(tracker_id)
+        if state is None:
+            state = {
+                "lock": Lock(),
+                "last_seen": now,
+                "last_timestamp_ms": 0,
+                "pose": None,
+                "landmarker": _create_video_face_landmarker(),
+            }
+            _tracker_states[tracker_id] = state
+        else:
+            state["last_seen"] = now
+        return state
+
+
+def _next_video_timestamp_ms(state: dict):
+    now_ms = int(time.monotonic() * 1000)
+    timestamp_ms = max(int(state["last_timestamp_ms"]) + 1, now_ms)
+    state["last_timestamp_ms"] = timestamp_ms
+    return timestamp_ms
+
+
+def _reset_tracker_pose(state: dict | None):
+    if state is None:
+        return
+
+    with state["lock"]:
+        state["pose"] = None
+
+
+def _detect_landmarks(frame: np.ndarray, tracker_id: str | None):
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    tracker_state = _get_tracker_state(tracker_id)
+
+    if tracker_state is None:
+        return get_face_landmarker().detect(mp_image), None
+
+    with tracker_state["lock"]:
+        tracker_state["last_seen"] = time.monotonic()
+        return (
+            tracker_state["landmarker"].detect_for_video(
+                mp_image,
+                _next_video_timestamp_ms(tracker_state),
+            ),
+            tracker_state,
+        )
+
+
+def smooth_pose(pose: dict, tracker_state: dict | None):
+    if tracker_state is None:
+        return pose
+
+    with tracker_state["lock"]:
+        previous_pose = tracker_state.get("pose")
+        tracker_state["last_seen"] = time.monotonic()
+
+        if previous_pose is None:
+            tracker_state["pose"] = dict(pose)
+            return pose
+
+        signal_strength = max(
+            abs(pose["yaw"]) / 28.0,
+            abs(pose["nose_offset_x"]) / 0.19,
+            max(0.0, pose["pitch"]) / 22.0,
+        )
+        alpha = (
+            STRONG_SIGNAL_POSE_SMOOTHING_ALPHA
+            if signal_strength >= 1.0 and pose["pose_quality"] >= 0.42
+            else POSE_SMOOTHING_ALPHA
+            if pose["pose_quality"] >= 0.45
+            else LOW_QUALITY_POSE_SMOOTHING_ALPHA
+        )
+        smoothed = {**pose}
+
+        for key in POSE_KEYS:
+            smoothed[key] = (previous_pose[key] * (1.0 - alpha)) + (pose[key] * alpha)
+
+        smoothed["pose_quality"] = round(
+            (previous_pose["pose_quality"] * 0.35) + (pose["pose_quality"] * 0.65),
+            4,
+        )
+        tracker_state["pose"] = dict(smoothed)
+        return smoothed
+
+
+def get_head_pose(frame: np.ndarray, tracker_id: str | None = None):
+    h, w = frame.shape[:2]
+    result, tracker_state = _detect_landmarks(frame, tracker_id)
+
+    if not result.face_landmarks:
+        _reset_tracker_pose(tracker_state)
+        return None
+
+    landmarks = result.face_landmarks[0]
+    nose_tip = landmarks[1]
+    pose_angles = _extract_pose_from_landmark_transform(result)
+    if pose_angles is None:
+        pose_angles = _extract_pose_from_landmarks(landmarks, w, h)
+    if pose_angles is None:
+        return None
+
+    pose = {
+        **pose_angles,
+        "nose_offset_x": float(nose_tip.x - 0.5),
+        "nose_offset_y": float(nose_tip.y - 0.5),
+    }
+    pose["pose_quality"] = _estimate_pose_quality(
+        pose["pitch"],
+        pose["yaw"],
+        pose["roll"],
+        pose["nose_offset_x"],
+        pose["nose_offset_y"],
+    )
+    return smooth_pose(pose, tracker_state)
 
 
 def _normalize_angle(angle: float) -> float:
@@ -198,32 +376,62 @@ def _apply_delta_deadzone(value: float, deadzone: float) -> float:
     return 0.0 if abs(value) < deadzone else value
 
 
+def _downward_signal(
+    pitch_value: float,
+    nose_y_value: float,
+    pitch_threshold: float,
+    nose_threshold: float,
+):
+    pitch_score = max(0.0, pitch_value) / pitch_threshold
+    nose_score = max(0.0, nose_y_value) / nose_threshold
+    signal = (
+        (pitch_score >= 1.0 and nose_score >= 0.7) or
+        (pitch_score >= 0.8 and nose_score >= 1.0) or
+        (pitch_score >= 1.2) or
+        (nose_score >= 1.3)
+    )
+    return signal, round(max(pitch_score, nose_score), 4)
+
+
 def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
     deltas = build_pose_deltas(pose, baseline)
 
     if baseline is None:
         metrics = {
             "yaw": abs(pose["yaw"]) / ABS_YAW_THRESHOLD,
-            "pitch": abs(pose["pitch"]) / ABS_PITCH_THRESHOLD,
             "roll": abs(pose["roll"]) / ABS_ROLL_THRESHOLD,
             "nose_x": abs(pose["nose_offset_x"]) / ABS_NOSE_OFFSET_THRESHOLD,
-            "nose_y": abs(pose["nose_offset_y"]) / ABS_NOSE_OFFSET_THRESHOLD,
         }
+        downward_signal, downward_score = _downward_signal(
+            pose["pitch"],
+            pose["nose_offset_y"],
+            ABS_DOWNWARD_PITCH_THRESHOLD,
+            ABS_DOWNWARD_NOSE_OFFSET_THRESHOLD,
+        )
         clear_yaw_turn = abs(pose["yaw"]) >= 22.0
+        obvious_turn = (
+            pose["pose_quality"] >= 0.44 and
+            (
+                abs(pose["yaw"]) >= 30.0 or
+                (
+                    abs(pose["yaw"]) >= 22.0 and
+                    abs(pose["nose_offset_x"]) >= 0.145
+                )
+            )
+        )
         strong_signal = max(metrics.values()) >= 1.24
-        multi_signal = sum(value >= 1.02 for value in metrics.values()) >= 2
+        multi_signal = sum(value >= 1.0 for value in metrics.values()) >= 2
         lateral_signal = metrics["yaw"] >= 0.88 or metrics["nose_x"] >= 0.82
         combined_score = (
-            metrics["yaw"] * 0.62 +
-            metrics["pitch"] * 0.08 +
-            metrics["nose_x"] * 0.20 +
-            metrics["nose_y"] * 0.05 +
-            metrics["roll"] * 0.05
+            metrics["yaw"] * 0.72 +
+            metrics["nose_x"] * 0.2 +
+            metrics["roll"] * 0.08
         )
         looking_away = (
-            pose["pose_quality"] >= 0.5 and
+            pose["pose_quality"] >= 0.46 and
             (
                 clear_yaw_turn or
+                downward_signal or
                 (
                     lateral_signal and
                     (strong_signal or multi_signal or combined_score >= 1.08)
@@ -233,26 +441,39 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
     else:
         metrics = {
             "yaw": abs(deltas["yaw_delta"]) / DELTA_YAW_THRESHOLD,
-            "pitch": abs(deltas["pitch_delta"]) / DELTA_PITCH_THRESHOLD,
             "roll": abs(deltas["roll_delta"]) / DELTA_ROLL_THRESHOLD,
             "nose_x": abs(deltas["nose_offset_x_delta"]) / DELTA_NOSE_OFFSET_THRESHOLD,
-            "nose_y": abs(deltas["nose_offset_y_delta"]) / DELTA_NOSE_OFFSET_THRESHOLD,
         }
+        downward_signal, downward_score = _downward_signal(
+            deltas["pitch_delta"],
+            deltas["nose_offset_y_delta"],
+            DELTA_DOWNWARD_PITCH_THRESHOLD,
+            DELTA_DOWNWARD_NOSE_OFFSET_THRESHOLD,
+        )
         clear_yaw_turn = abs(deltas["yaw_delta"]) >= 15.0
+        obvious_turn = (
+            pose["pose_quality"] >= 0.4 and
+            (
+                abs(deltas["yaw_delta"]) >= 22.0 or
+                (
+                    abs(deltas["yaw_delta"]) >= 16.0 and
+                    abs(deltas["nose_offset_x_delta"]) >= 0.11
+                )
+            )
+        )
         strong_signal = max(metrics.values()) >= 1.18
-        multi_signal = sum(value >= 1.02 for value in metrics.values()) >= 2
+        multi_signal = sum(value >= 1.0 for value in metrics.values()) >= 2
         lateral_signal = metrics["yaw"] >= 0.9 or metrics["nose_x"] >= 0.84
         combined_score = (
-            metrics["yaw"] * 0.66 +
-            metrics["pitch"] * 0.08 +
+            metrics["yaw"] * 0.74 +
             metrics["nose_x"] * 0.18 +
-            metrics["nose_y"] * 0.04 +
-            metrics["roll"] * 0.04
+            metrics["roll"] * 0.08
         )
         looking_away = (
-            pose["pose_quality"] >= 0.47 and
+            pose["pose_quality"] >= 0.43 and
             (
                 clear_yaw_turn or
+                downward_signal or
                 (
                     lateral_signal and
                     (strong_signal or multi_signal or combined_score >= 1.04)
@@ -260,14 +481,14 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
             )
         )
 
-    return looking_away, deltas, metrics, round(combined_score, 4)
+    return looking_away, obvious_turn, deltas, metrics, round(max(combined_score, downward_score), 4)
 
 
 @router.post("/analyze")
 async def analyze_head_pose(req: FrameRequest):
     try:
         frame = base64_to_frame(req.frame)
-        pose = get_head_pose(frame)
+        pose = get_head_pose(frame, req.tracker_id)
 
         if pose is None:
             return {
@@ -288,7 +509,7 @@ async def analyze_head_pose(req: FrameRequest):
                 "baseline_applied": req.baseline is not None,
             }
 
-        looking_away, deltas, metrics, combined_score = classify_looking_away(pose, req.baseline)
+        looking_away, obvious_turn, deltas, metrics, combined_score = classify_looking_away(pose, req.baseline)
 
         return {
             "tracking_available": True,
@@ -302,6 +523,7 @@ async def analyze_head_pose(req: FrameRequest):
             **deltas,
             "movement_score": round(max(metrics.values()), 4),
             "combined_movement_score": combined_score,
+            "obvious_turn": obvious_turn,
             "looking_away": looking_away,
             "event": "head_turned" if looking_away else None,
             "baseline_applied": req.baseline is not None,
