@@ -15,8 +15,8 @@ import {
 void motion;
 const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 const HIGH_QUALITY_VIDEO_CONSTRAINTS = {
-  width: { ideal: 1280, min: 640 },
-  height: { ideal: 720, min: 480 },
+  width: { ideal: 1280, min: 960 },
+  height: { ideal: 720, min: 540 },
   facingMode: "user",
 };
 const EXAM_AUDIO_CONSTRAINTS = {
@@ -124,13 +124,13 @@ const WebcamMonitor = ({ onAlert, videoRef: externalVideoRef, streamRef: externa
         camStatus === "active" ? "border-green-500/30" : "border-red-500/30"
       }`}>
         {camStatus === "denied" ? (
-          <div className="w-full h-36 bg-gray-800 flex flex-col items-center justify-center gap-2">
+          <div className="w-full aspect-video bg-gray-800 flex flex-col items-center justify-center gap-2">
             <FiCameraOff className="text-red-400 text-2xl" />
             <p className="text-red-400 text-xs">Camera denied</p>
           </div>
         ) : (
           <video ref={videoRef} autoPlay muted playsInline
-            className="w-full h-36 object-cover bg-gray-800" />
+            className="w-full aspect-video object-contain bg-gray-800" />
         )}
       </div>
       <div className={`absolute top-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium ${
