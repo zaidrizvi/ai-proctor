@@ -31,6 +31,7 @@ const EVENT_LOG_COOLDOWNS_MS = {
   head_turned: 7000,
   gaze_away: 7000,
   face_not_detected: 4000,
+  camera_frame_unavailable: 8000,
   multiple_faces: 6000,
   object_detected: 8000,
   face_mismatch: 30000,
@@ -39,8 +40,21 @@ const EVENT_LOG_COOLDOWNS_MS = {
   ml_service_unavailable: 30000,
 };
 const LIVE_ALERT_LIMIT = 4;
+const BASELINE_MIN_POSE_QUALITY = 0.55;
+const BASELINE_MAX_HEAD_DELTA = {
+  pitch: 8,
+  yaw: 8,
+  roll: 7,
+  nose_offset_x: 0.055,
+  nose_offset_y: 0.05,
+};
+const BASELINE_MAX_GAZE_DELTA = {
+  horizontal_angle: 6.5,
+  vertical_angle: 5.0,
+};
 const EVENT_LABELS = {
   face_not_detected: "Face Missing",
+  camera_frame_unavailable: "Camera Frame Unavailable",
   multiple_faces: "Multiple Faces",
   gaze_away: "Gaze Away",
   head_turned: "Head Turned",
@@ -50,6 +64,16 @@ const EVENT_LABELS = {
   fullscreen_exit: "Fullscreen Exit",
   face_mismatch: "Face Mismatch",
   ml_service_unavailable: "ML Unavailable",
+};
+
+const isStableAgainstPrevious = (previousSample, nextSample, maxDeltas) => {
+  if (!previousSample) {
+    return true;
+  }
+
+  return Object.entries(maxDeltas).every(([key, maxDelta]) => {
+    return Math.abs(Number(nextSample[key]) - Number(previousSample[key])) <= maxDelta;
+  });
 };
 
 const summarizeSamples = (samples, keys) => {
@@ -105,7 +129,7 @@ const WebcamMonitor = ({ onAlert, videoRef: externalVideoRef, streamRef: externa
       setCamStatus("active");
     } catch {
       setCamStatus("denied");
-      onAlert("face_not_detected", "high", "Camera access denied");
+      onAlert("camera_frame_unavailable", "high", "Camera access denied");
     }
   };
 
@@ -209,6 +233,7 @@ const ExamInterface = () => {
   const pendingProgressRef = useRef(null);
   const answersRef = useRef({});
   const currentQRef = useRef(0);
+  const lastMlFramePreviewAtRef = useRef(0);
 
   // state
   const [exam, setExam] = useState(null);
@@ -231,6 +256,7 @@ const ExamInterface = () => {
   const [startReady, setStartReady] = useState(false);
   const [microphonePrepared, setMicrophonePrepared] = useState(false);
   const [liveAlerts, setLiveAlerts] = useState([]);
+  const [mlFramePreview, setMlFramePreview] = useState("");
 
   const getRemainingSeconds = useCallback((activeSession, loadedExam) => {
     const totalSeconds = Number(loadedExam?.duration || 0) * 60;
@@ -329,6 +355,16 @@ const ExamInterface = () => {
     logProctorEvent(eventType, severity, description);
   }, []);
 
+  const handleMlFramePreview = useCallback((frame) => {
+    const now = Date.now();
+    if (now - lastMlFramePreviewAtRef.current < 2000) {
+      return;
+    }
+
+    lastMlFramePreviewAtRef.current = now;
+    setMlFramePreview(frame);
+  }, []);
+
   // ── useProctor hook ─────────────────────────────────────────
   const {
     incrementTabSwitch,
@@ -347,6 +383,7 @@ const ExamInterface = () => {
     headPoseBaseline,
     gazeBaseline,
     onAlert: handleWebcamAlert,
+    onMlFrame: handleMlFramePreview,
     intervalMs: 1200,
     verifyIntervalMs: 30000,
   });
@@ -370,6 +407,12 @@ const ExamInterface = () => {
   useEffect(() => {
     currentQRef.current = currentQ;
   }, [currentQ]);
+
+  useEffect(() => {
+    if (examReady && !submitted) return;
+    setMlFramePreview("");
+    lastMlFramePreviewAtRef.current = 0;
+  }, [examReady, submitted]);
 
   const loadFaceReference = async () => {
     try {
@@ -590,8 +633,10 @@ const ExamInterface = () => {
   const calibrateAttentionBaseline = useCallback(async () => {
     const headSamples = [];
     const gazeSamples = [];
+    let lastAcceptedHeadSample = null;
+    let lastAcceptedGazeSample = null;
 
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
       const frame = await captureIdentityFrame();
       if (!frame) {
         await new Promise((resolve) => window.setTimeout(resolve, 250));
@@ -604,39 +649,67 @@ const ExamInterface = () => {
           axios.post(`${ML_URL}/gaze/analyze`, { frame }),
         ]);
 
-        if (headRes.data.head_detected) {
-          headSamples.push({
+        if (
+          headRes.data.head_detected &&
+          Number(headRes.data.pose_quality || 0) >= BASELINE_MIN_POSE_QUALITY &&
+          !headRes.data.looking_away
+        ) {
+          const headSample = {
             pitch: headRes.data.pitch,
             yaw: headRes.data.yaw,
             roll: headRes.data.roll,
             nose_offset_x: headRes.data.nose_offset_x,
             nose_offset_y: headRes.data.nose_offset_y,
-          });
+          };
+
+          if (isStableAgainstPrevious(lastAcceptedHeadSample, headSample, BASELINE_MAX_HEAD_DELTA)) {
+            headSamples.push(headSample);
+            lastAcceptedHeadSample = headSample;
+          }
         }
 
-        if (gazeRes.data.tracking_available && gazeRes.data.face_detected) {
-          gazeSamples.push({
+        if (
+          gazeRes.data.tracking_available &&
+          gazeRes.data.face_detected &&
+          !gazeRes.data.looking_away &&
+          Number(gazeRes.data.face_area_ratio || 0) >= 0.024 &&
+          Number(gazeRes.data.gaze_score || 0) <= 0.85
+        ) {
+          const gazeSample = {
             horizontal_angle: gazeRes.data.horizontal_angle,
             vertical_angle: gazeRes.data.vertical_angle,
-          });
+          };
+
+          if (isStableAgainstPrevious(lastAcceptedGazeSample, gazeSample, BASELINE_MAX_GAZE_DELTA)) {
+            gazeSamples.push(gazeSample);
+            lastAcceptedGazeSample = gazeSample;
+          }
         }
       } catch {}
+
+      if (headSamples.length >= 4 && gazeSamples.length >= 4) {
+        break;
+      }
 
       await new Promise((resolve) => window.setTimeout(resolve, 250));
     }
 
-    const headBaseline = summarizeSamples(headSamples, [
-      "pitch",
-      "yaw",
-      "roll",
-      "nose_offset_x",
-      "nose_offset_y",
-    ]);
+    const headBaseline = headSamples.length >= 3
+      ? summarizeSamples(headSamples, [
+        "pitch",
+        "yaw",
+        "roll",
+        "nose_offset_x",
+        "nose_offset_y",
+      ])
+      : null;
 
-    const gazeBaselineValue = summarizeSamples(gazeSamples, [
-      "horizontal_angle",
-      "vertical_angle",
-    ]);
+    const gazeBaselineValue = gazeSamples.length >= 3
+      ? summarizeSamples(gazeSamples, [
+        "horizontal_angle",
+        "vertical_angle",
+      ])
+      : null;
 
     return {
       head: headBaseline,
@@ -1294,6 +1367,26 @@ const ExamInterface = () => {
                 logProctorEvent("audio_detected", "medium", `Speech detected in background${confidence}`);
               }}
             />
+            {mlFramePreview && (
+              <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-2">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-200">
+                    ML Frame Preview
+                  </p>
+                  <span className="text-[10px] text-cyan-200/70">
+                    Sent to ML
+                  </span>
+                </div>
+                <img
+                  src={mlFramePreview}
+                  alt="Frame sent to ML"
+                  className="w-full aspect-video rounded-lg border border-cyan-500/20 object-cover bg-gray-900"
+                />
+                <p className="mt-2 text-[10px] leading-relaxed text-cyan-100/70">
+                  This is the compressed frame payload currently being posted to the ML endpoints.
+                </p>
+              </div>
+            )}
             {liveAlerts.length > 0 && (
               <div className="mt-3 space-y-2">
                 {liveAlerts.map((alert) => (

@@ -28,22 +28,22 @@ ABS_YAW_THRESHOLD = 24
 ABS_PITCH_THRESHOLD = 17
 ABS_NOSE_OFFSET_THRESHOLD = 0.18
 ABS_ROLL_THRESHOLD = 24
-ABS_DOWNWARD_PITCH_THRESHOLD = 18
-ABS_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.085
+ABS_DOWNWARD_PITCH_THRESHOLD = 21
+ABS_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.095
 
 DELTA_YAW_THRESHOLD = 12
 DELTA_PITCH_THRESHOLD = 16
 DELTA_NOSE_OFFSET_THRESHOLD = 0.16
 DELTA_ROLL_THRESHOLD = 20
-DELTA_DOWNWARD_PITCH_THRESHOLD = 11
-DELTA_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.06
+DELTA_DOWNWARD_PITCH_THRESHOLD = 13
+DELTA_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.07
 DELTA_YAW_DEADZONE = 4.0
 DELTA_PITCH_DEADZONE = 5.5
 DELTA_ROLL_DEADZONE = 5.0
 DELTA_NOSE_DEADZONE = 0.045
-POSE_SMOOTHING_ALPHA = 0.58
-LOW_QUALITY_POSE_SMOOTHING_ALPHA = 0.4
-STRONG_SIGNAL_POSE_SMOOTHING_ALPHA = 0.82
+POSE_SMOOTHING_ALPHA = 0.7
+LOW_QUALITY_POSE_SMOOTHING_ALPHA = 0.5
+STRONG_SIGNAL_POSE_SMOOTHING_ALPHA = 0.88
 TRACKER_STATE_TTL_SECONDS = 10.0
 
 POSE_KEYS = (
@@ -395,6 +395,7 @@ def _downward_signal(
 
 def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
     deltas = build_pose_deltas(pose, baseline)
+    turn_axis = "none"
 
     if baseline is None:
         metrics = {
@@ -408,7 +409,7 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
             ABS_DOWNWARD_PITCH_THRESHOLD,
             ABS_DOWNWARD_NOSE_OFFSET_THRESHOLD,
         )
-        clear_yaw_turn = abs(pose["yaw"]) >= 22.0
+        clear_yaw_turn = abs(pose["yaw"]) >= 24.0
         obvious_turn = (
             pose["pose_quality"] >= 0.44 and
             (
@@ -421,7 +422,7 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
         )
         strong_signal = max(metrics.values()) >= 1.24
         multi_signal = sum(value >= 1.0 for value in metrics.values()) >= 2
-        lateral_signal = metrics["yaw"] >= 0.88 or metrics["nose_x"] >= 0.82
+        lateral_signal = metrics["yaw"] >= 0.92 or metrics["nose_x"] >= 0.86
         combined_score = (
             metrics["yaw"] * 0.72 +
             metrics["nose_x"] * 0.2 +
@@ -434,10 +435,14 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
                 downward_signal or
                 (
                     lateral_signal and
-                    (strong_signal or multi_signal or combined_score >= 1.08)
+                    (strong_signal or multi_signal or combined_score >= 1.12)
                 )
             )
         )
+        if clear_yaw_turn or lateral_signal:
+            turn_axis = "lateral"
+        elif downward_signal:
+            turn_axis = "downward"
     else:
         metrics = {
             "yaw": abs(deltas["yaw_delta"]) / DELTA_YAW_THRESHOLD,
@@ -450,7 +455,7 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
             DELTA_DOWNWARD_PITCH_THRESHOLD,
             DELTA_DOWNWARD_NOSE_OFFSET_THRESHOLD,
         )
-        clear_yaw_turn = abs(deltas["yaw_delta"]) >= 15.0
+        clear_yaw_turn = abs(deltas["yaw_delta"]) >= 16.0
         obvious_turn = (
             pose["pose_quality"] >= 0.4 and
             (
@@ -463,7 +468,7 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
         )
         strong_signal = max(metrics.values()) >= 1.18
         multi_signal = sum(value >= 1.0 for value in metrics.values()) >= 2
-        lateral_signal = metrics["yaw"] >= 0.9 or metrics["nose_x"] >= 0.84
+        lateral_signal = metrics["yaw"] >= 0.94 or metrics["nose_x"] >= 0.88
         combined_score = (
             metrics["yaw"] * 0.74 +
             metrics["nose_x"] * 0.18 +
@@ -476,12 +481,16 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
                 downward_signal or
                 (
                     lateral_signal and
-                    (strong_signal or multi_signal or combined_score >= 1.04)
+                    (strong_signal or multi_signal or combined_score >= 1.08)
                 )
             )
         )
+        if clear_yaw_turn or lateral_signal:
+            turn_axis = "lateral"
+        elif downward_signal:
+            turn_axis = "downward"
 
-    return looking_away, obvious_turn, deltas, metrics, round(max(combined_score, downward_score), 4)
+    return looking_away, obvious_turn, turn_axis, downward_signal, deltas, metrics, round(max(combined_score, downward_score), 4)
 
 
 @router.post("/analyze")
@@ -509,7 +518,7 @@ async def analyze_head_pose(req: FrameRequest):
                 "baseline_applied": req.baseline is not None,
             }
 
-        looking_away, obvious_turn, deltas, metrics, combined_score = classify_looking_away(pose, req.baseline)
+        looking_away, obvious_turn, turn_axis, downward_signal, deltas, metrics, combined_score = classify_looking_away(pose, req.baseline)
 
         return {
             "tracking_available": True,
@@ -524,6 +533,8 @@ async def analyze_head_pose(req: FrameRequest):
             "movement_score": round(max(metrics.values()), 4),
             "combined_movement_score": combined_score,
             "obvious_turn": obvious_turn,
+            "turn_axis": turn_axis,
+            "downward_signal": downward_signal,
             "looking_away": looking_away,
             "event": "head_turned" if looking_away else None,
             "baseline_applied": req.baseline is not None,
