@@ -41,16 +41,15 @@ const EVENT_LOG_COOLDOWNS_MS = {
 };
 const LIVE_ALERT_LIMIT = 4;
 const BASELINE_MIN_POSE_QUALITY = 0.55;
+const BASELINE_RETRY_DELAY_MS = 3500;
+const BASELINE_CAPTURE_ATTEMPTS = 18;
+const BASELINE_CAPTURE_PAUSE_MS = 250;
 const BASELINE_MAX_HEAD_DELTA = {
   pitch: 8,
   yaw: 8,
   roll: 7,
   nose_offset_x: 0.055,
   nose_offset_y: 0.05,
-};
-const BASELINE_MAX_GAZE_DELTA = {
-  horizontal_angle: 6.5,
-  vertical_angle: 5.0,
 };
 const EVENT_LABELS = {
   face_not_detected: "Face Missing",
@@ -98,6 +97,16 @@ const summarizeSamples = (samples, keys) => {
   });
 
   return summarized;
+};
+
+const getMissingBaselineParts = (baseline) => {
+  const missing = [];
+
+  if (!baseline?.head) {
+    missing.push("head");
+  }
+
+  return missing;
 };
 
 // ── Webcam Monitor ────────────────────────────────────────────
@@ -234,6 +243,7 @@ const ExamInterface = () => {
   const answersRef = useRef({});
   const currentQRef = useRef(0);
   const lastMlFramePreviewAtRef = useRef(0);
+  const baselineRetryTimeoutRef = useRef(null);
 
   // state
   const [exam, setExam] = useState(null);
@@ -249,7 +259,10 @@ const ExamInterface = () => {
   const [referenceFace, setReferenceFace] = useState("");
   const [referenceFaceEmbedding, setReferenceFaceEmbedding] = useState([]);
   const [headPoseBaseline, setHeadPoseBaseline] = useState(null);
-  const [gazeBaseline, setGazeBaseline] = useState(null);
+  const [baselineCalibrationInfo, setBaselineCalibrationInfo] = useState({
+    status: "idle",
+    missing: [],
+  });
   const [identityStatus, setIdentityStatus] = useState("loading");
   const [identityMessage, setIdentityMessage] = useState("Checking face verification status...");
   const [identityBusy, setIdentityBusy] = useState(false);
@@ -357,7 +370,7 @@ const ExamInterface = () => {
 
   const handleMlFramePreview = useCallback((frame) => {
     const now = Date.now();
-    if (now - lastMlFramePreviewAtRef.current < 2000) {
+    if (now - lastMlFramePreviewAtRef.current < 800) {
       return;
     }
 
@@ -381,10 +394,10 @@ const ExamInterface = () => {
     referenceFace,
     referenceFaceEmbedding,
     headPoseBaseline,
-    gazeBaseline,
+    suppressHeadTurnAlerts: baselineCalibrationInfo.status !== "ready",
     onAlert: handleWebcamAlert,
     onMlFrame: handleMlFramePreview,
-    intervalMs: 1200,
+    intervalMs: 800,
     verifyIntervalMs: 30000,
   });
 
@@ -632,34 +645,32 @@ const ExamInterface = () => {
 
   const calibrateAttentionBaseline = useCallback(async () => {
     const headSamples = [];
-    const gazeSamples = [];
     let lastAcceptedHeadSample = null;
-    let lastAcceptedGazeSample = null;
 
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (let attempt = 0; attempt < BASELINE_CAPTURE_ATTEMPTS; attempt += 1) {
       const frame = await captureIdentityFrame();
       if (!frame) {
-        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        await new Promise((resolve) => window.setTimeout(resolve, BASELINE_CAPTURE_PAUSE_MS));
         continue;
       }
 
       try {
-        const [headRes, gazeRes] = await Promise.all([
-          axios.post(`${ML_URL}/head/analyze`, { frame }),
-          axios.post(`${ML_URL}/gaze/analyze`, { frame }),
-        ]);
+        const { data: headData } = await axios.post(`${ML_URL}/head/analyze`, {
+          frame,
+          tracker_id: session?._id || examId || "default",
+        });
 
         if (
-          headRes.data.head_detected &&
-          Number(headRes.data.pose_quality || 0) >= BASELINE_MIN_POSE_QUALITY &&
-          !headRes.data.looking_away
+          headData.head_detected &&
+          Number(headData.pose_quality || 0) >= BASELINE_MIN_POSE_QUALITY &&
+          !headData.looking_away
         ) {
           const headSample = {
-            pitch: headRes.data.pitch,
-            yaw: headRes.data.yaw,
-            roll: headRes.data.roll,
-            nose_offset_x: headRes.data.nose_offset_x,
-            nose_offset_y: headRes.data.nose_offset_y,
+            pitch: headData.pitch,
+            yaw: headData.yaw,
+            roll: headData.roll,
+            nose_offset_x: headData.nose_offset_x,
+            nose_offset_y: headData.nose_offset_y,
           };
 
           if (isStableAgainstPrevious(lastAcceptedHeadSample, headSample, BASELINE_MAX_HEAD_DELTA)) {
@@ -667,31 +678,13 @@ const ExamInterface = () => {
             lastAcceptedHeadSample = headSample;
           }
         }
-
-        if (
-          gazeRes.data.tracking_available &&
-          gazeRes.data.face_detected &&
-          !gazeRes.data.looking_away &&
-          Number(gazeRes.data.face_area_ratio || 0) >= 0.024 &&
-          Number(gazeRes.data.gaze_score || 0) <= 0.85
-        ) {
-          const gazeSample = {
-            horizontal_angle: gazeRes.data.horizontal_angle,
-            vertical_angle: gazeRes.data.vertical_angle,
-          };
-
-          if (isStableAgainstPrevious(lastAcceptedGazeSample, gazeSample, BASELINE_MAX_GAZE_DELTA)) {
-            gazeSamples.push(gazeSample);
-            lastAcceptedGazeSample = gazeSample;
-          }
-        }
       } catch {}
 
-      if (headSamples.length >= 4 && gazeSamples.length >= 4) {
+      if (headSamples.length >= 4) {
         break;
       }
 
-      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      await new Promise((resolve) => window.setTimeout(resolve, BASELINE_CAPTURE_PAUSE_MS));
     }
 
     const headBaseline = headSamples.length >= 3
@@ -704,29 +697,41 @@ const ExamInterface = () => {
       ])
       : null;
 
-    const gazeBaselineValue = gazeSamples.length >= 3
-      ? summarizeSamples(gazeSamples, [
-        "horizontal_angle",
-        "vertical_angle",
-      ])
-      : null;
-
     return {
       head: headBaseline,
-      gaze: gazeBaselineValue,
     };
-  }, [captureIdentityFrame]);
+  }, [captureIdentityFrame, examId, session?._id]);
 
   const queueBaselineCalibration = useCallback(async () => {
     if (baselineCalibrationRef.current) {
       return baselineCalibrationRef.current;
     }
 
+    setBaselineCalibrationInfo((prev) => ({
+      status: prev.status === "ready" ? "ready" : "calibrating",
+      missing: prev.status === "ready" ? [] : prev.missing,
+    }));
     baselineCalibrationRef.current = calibrateAttentionBaseline()
       .then((baseline) => {
-        setHeadPoseBaseline(baseline?.head || null);
-        setGazeBaseline(baseline?.gaze || null);
+        const nextHeadBaseline = baseline?.head || null;
+        const missing = getMissingBaselineParts({
+          head: nextHeadBaseline,
+        });
+
+        setHeadPoseBaseline(nextHeadBaseline);
+        setBaselineCalibrationInfo({
+          status: missing.length === 0 ? "ready" : "retrying",
+          missing,
+        });
         return baseline;
+      })
+      .catch(() => {
+        setHeadPoseBaseline(null);
+        setBaselineCalibrationInfo({
+          status: "retrying",
+          missing: ["head"],
+        });
+        return { head: null };
       })
       .finally(() => {
         baselineCalibrationRef.current = null;
@@ -734,6 +739,45 @@ const ExamInterface = () => {
 
     return baselineCalibrationRef.current;
   }, [calibrateAttentionBaseline]);
+
+  useEffect(() => {
+    if (baselineRetryTimeoutRef.current) {
+      window.clearTimeout(baselineRetryTimeoutRef.current);
+      baselineRetryTimeoutRef.current = null;
+    }
+
+    if (!examReady || submitted) {
+      return undefined;
+    }
+
+    const missing = getMissingBaselineParts({
+      head: headPoseBaseline,
+    });
+
+    if (missing.length === 0) {
+      setBaselineCalibrationInfo({
+        status: "ready",
+        missing: [],
+      });
+      return undefined;
+    }
+
+    setBaselineCalibrationInfo((prev) => ({
+      status: prev.status === "calibrating" ? prev.status : "retrying",
+      missing,
+    }));
+
+    baselineRetryTimeoutRef.current = window.setTimeout(() => {
+      void queueBaselineCalibration();
+    }, BASELINE_RETRY_DELAY_MS);
+
+    return () => {
+      if (baselineRetryTimeoutRef.current) {
+        window.clearTimeout(baselineRetryTimeoutRef.current);
+        baselineRetryTimeoutRef.current = null;
+      }
+    };
+  }, [examReady, submitted, headPoseBaseline, queueBaselineCalibration]);
 
   const exitFullscreenSafely = useCallback(async () => {
     fullscreenReadyRef.current = false;
@@ -1050,9 +1094,32 @@ const ExamInterface = () => {
 
   const handleSubmit = () => submitExam();
 
+  const baselineMissingLabel = baselineCalibrationInfo.missing.length === 0
+    ? ""
+    : baselineCalibrationInfo.missing[0];
+
+  const baselineCalibrationMessage = baselineCalibrationInfo.status === "ready"
+    ? "Head pose baseline calibrated successfully and is now being used for tracking."
+    : baselineCalibrationInfo.status === "calibrating"
+    ? "Capturing stable head pose samples for baseline calibration..."
+    : baselineCalibrationInfo.status === "retrying"
+    ? `Waiting for cleaner samples. Missing ${baselineMissingLabel} baseline; auto-retrying while you stay centered.`
+    : "Head pose baseline will calibrate automatically after verification.";
+
+  const baselineValueSummary = headPoseBaseline
+    ? `pitch ${Number(headPoseBaseline.pitch).toFixed(1)}, yaw ${Number(headPoseBaseline.yaw).toFixed(1)}, roll ${Number(headPoseBaseline.roll).toFixed(1)}, nose x ${Number(headPoseBaseline.nose_offset_x).toFixed(3)}, nose y ${Number(headPoseBaseline.nose_offset_y).toFixed(3)}`
+    : "";
+
   const submitExam = async () => {
     setSubmitting(true);
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    fullscreenReadyRef.current = false;
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        // Ignore fullscreen exit issues during normal submission.
+      }
+    }
     try {
       const formattedAnswers = Object.entries(answers).map(([qi, opt]) => ({
         questionIndex: parseInt(qi),
@@ -1164,6 +1231,28 @@ const ExamInterface = () => {
               </span>
             </div>
             <p className="text-gray-400 text-xs leading-relaxed">{identityMessage}</p>
+            <div className={`rounded-lg border px-3 py-2 text-[11px] ${
+              baselineCalibrationInfo.status === "ready"
+                ? "border-green-500/20 bg-green-500/10 text-green-200"
+                : "border-amber-500/20 bg-amber-500/10 text-amber-200"
+            }`}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold tracking-wide">Head Pose Baseline</span>
+                <span className="opacity-80">
+                  {baselineCalibrationInfo.status === "ready"
+                    ? "Ready"
+                    : baselineCalibrationInfo.status === "calibrating"
+                    ? "Calibrating"
+                    : baselineCalibrationInfo.status === "retrying"
+                    ? "Retrying"
+                    : "Pending"}
+                </span>
+              </div>
+              <p className="mt-1 leading-relaxed opacity-90">{baselineCalibrationMessage}</p>
+              {baselineValueSummary && (
+                <p className="mt-1 font-mono opacity-75">{baselineValueSummary}</p>
+              )}
+            </div>
             {!referenceFace && (
               <button
                 type="button"
@@ -1367,6 +1456,28 @@ const ExamInterface = () => {
                 logProctorEvent("audio_detected", "medium", `Speech detected in background${confidence}`);
               }}
             />
+            <div className={`mt-3 rounded-xl border px-2.5 py-2 text-[11px] ${
+              baselineCalibrationInfo.status === "ready"
+                ? "border-green-500/25 bg-green-500/10 text-green-200"
+                : "border-amber-500/25 bg-amber-500/10 text-amber-200"
+            }`}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold tracking-wide">Head Pose Baseline</span>
+                <span className="text-[10px] opacity-75">
+                  {baselineCalibrationInfo.status === "ready"
+                    ? "Ready"
+                    : baselineCalibrationInfo.status === "calibrating"
+                    ? "Calibrating"
+                    : baselineCalibrationInfo.status === "retrying"
+                    ? "Retrying"
+                    : "Pending"}
+                </span>
+              </div>
+              <p className="mt-1 leading-relaxed opacity-85">{baselineCalibrationMessage}</p>
+              {baselineValueSummary && (
+                <p className="mt-1 font-mono opacity-75">{baselineValueSummary}</p>
+              )}
+            </div>
             {mlFramePreview && (
               <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-2">
                 <div className="flex items-center justify-between gap-2 mb-2">

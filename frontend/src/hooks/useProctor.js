@@ -7,15 +7,15 @@ const FACE_RECOVERY_STREAK = 2;
 const MULTIPLE_FACES_STREAK_TO_ALERT = 3;
 const HEAD_TURN_STREAK_TO_ALERT = 2;
 const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
-const GAZE_AWAY_STREAK_TO_ALERT = 3;
+const GAZE_AWAY_STREAK_TO_ALERT = 2;
 const NO_FRAME_STREAK_TO_ALERT = 2;
 const FACE_MISMATCH_STREAK_TO_ALERT = 2;
-const HEAD_TURN_ALERT_COOLDOWN_MS = 10000;
+const HEAD_TURN_ALERT_COOLDOWN_MS = 5000;
 const OBJECT_DETECTED_STREAK_TO_ALERT = 2;
-const OBJECT_ALERT_COOLDOWN_MS = 10000;
+const OBJECT_ALERT_COOLDOWN_MS = 5000;
 const OBJECT_ANALYSIS_INTERVAL_MS = 3500;
-const MULTIPLE_FACES_ALERT_COOLDOWN_MS = 10000;
-const FACE_MISMATCH_ALERT_COOLDOWN_MS = 45000;
+const MULTIPLE_FACES_ALERT_COOLDOWN_MS = 5000;
+const FACE_MISMATCH_ALERT_COOLDOWN_MS = 5000;
 const MIN_HEAD_POSE_QUALITY_FOR_ALERT = 0.46;
 const MIN_FACE_CONFIDENCE_FOR_STABLE_ALERTS = 0.54;
 const MIN_FACE_AREA_RATIO_FOR_STABLE_ALERTS = 0.024;
@@ -33,7 +33,7 @@ const useProctor = ({
   referenceFace = "",
   referenceFaceEmbedding = [],
   headPoseBaseline = null,
-  gazeBaseline = null,
+  suppressHeadTurnAlerts = false,
   onAlert,
   onMlFrame,
   intervalMs = 800,
@@ -280,6 +280,7 @@ const useProctor = ({
 
   const processHeadResult = useCallback((headResult, gazeResult, now, faceState = {}, token) => {
     const shouldSuppressHeadTurn =
+      suppressHeadTurnAlerts ||
       faceState.noFace ||
       faceState.weakFace;
 
@@ -336,7 +337,7 @@ const useProctor = ({
     } else if (!headTurned) {
       activeFlagsRef.current.headTurned = false;
     }
-  }, [decayStreak, emitAlert]);
+  }, [decayStreak, emitAlert, suppressHeadTurnAlerts]);
 
   const processGazeResult = useCallback((gazeResult, faceState = {}, token) => {
     let gazeLookingAway = false;
@@ -610,7 +611,6 @@ const useProctor = ({
           key: "gaze",
           promise: axios.post(`${ML_URL}/gaze/analyze`, {
             frame,
-            baseline: gazeBaseline,
           }),
         },
       ];
@@ -683,7 +683,6 @@ const useProctor = ({
     deriveTrackerFacePresence,
     emitAlert,
     headPoseBaseline,
-    gazeBaseline,
     isTokenActive,
     onMlFrame,
     processFaceResult,
@@ -731,6 +730,7 @@ const useProctor = ({
       objectAnalysisInFlightRef.current = false;
       verifyAnalysisInFlightRef.current = false;
       lastObjectCheckAtRef.current = 0;
+      lastIdentityCheckRef.current = 0;
       analysisCycleRef.current = 0;
       noFrameStreakRef.current = 0;
       multipleFacesSourcesRef.current = {

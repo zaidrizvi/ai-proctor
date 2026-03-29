@@ -67,6 +67,14 @@ const examSessionSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    totalIncidentCount: {
+      type: Number,
+      default: 0,
+    },
+    mlUnavailableCount: {
+      type: Number,
+      default: 0,
+    },
     verificationFaceImagePath: {
       type: String,
       default: "",

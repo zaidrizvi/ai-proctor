@@ -24,7 +24,7 @@ const EVENT_SCORING_RULES = {
     group: "identity",
   },
   face_mismatch: {
-    weight: 0.42,
+    weight: 0.34,
     severityScale: 0.8,
     mergeWindowMs: 45_000,
     group: "identity",
@@ -48,19 +48,19 @@ const EVENT_SCORING_RULES = {
     group: "behavior",
   },
   gaze_away: {
-    weight: 0.05,
+    weight: 0.06,
     severityScale: 2.6,
     mergeWindowMs: 8_000,
     group: "attention",
   },
   head_turned: {
-    weight: 0.06,
+    weight: 0.09,
     severityScale: 3.1,
     mergeWindowMs: 8_000,
     group: "attention",
   },
   audio_detected: {
-    weight: 0.1,
+    weight: 0.09,
     severityScale: 2.4,
     mergeWindowMs: 15_000,
     group: "environment",
@@ -80,6 +80,7 @@ const DEFAULT_COUNTS = {
   suspicionScore: 0,
   eventCounts: {},
   incidentCounts: {},
+  totalIncidentCount: 0,
   mlUnavailableCount: 0,
   scoringVersion: SCORING_VERSION,
 };
@@ -151,6 +152,9 @@ const countIncidents = (incidentsByType = {}) =>
   Object.fromEntries(
     Object.entries(incidentsByType).map(([eventType, incidents]) => [eventType, incidents.length])
   );
+
+const countTotalIncidents = (incidentsByType = {}) =>
+  Object.values(countIncidents(incidentsByType)).reduce((sum, count) => sum + count, 0);
 
 const flattenIncidents = (incidentsByType = {}) =>
   Object.values(incidentsByType)
@@ -291,6 +295,7 @@ const calculateSuspicionScore = (events = []) => {
     return {
       score: 0,
       incidentCounts: countIncidents(incidentsByType),
+      totalIncidentCount: countTotalIncidents(incidentsByType),
       signalStrengths: {},
     };
   }
@@ -310,6 +315,7 @@ const calculateSuspicionScore = (events = []) => {
   return {
     score,
     incidentCounts: countIncidents(incidentsByType),
+    totalIncidentCount: countTotalIncidents(incidentsByType),
     signalStrengths: overallRisk.signalStrengths,
   };
 };
@@ -326,6 +332,7 @@ export const summarizeProctorEvents = (events = []) => {
     suspicionScore: suspicion.score,
     eventCounts,
     incidentCounts: suspicion.incidentCounts,
+    totalIncidentCount: suspicion.totalIncidentCount,
     mlUnavailableCount: eventCounts.ml_service_unavailable || 0,
   };
 };
@@ -342,6 +349,7 @@ export const applyProctorSummaryToSession = (session, summary) => {
   nextSession.tabSwitchCount = summary.tabSwitchCount;
   nextSession.faceNotDetectedCount = summary.faceNotDetectedCount;
   nextSession.suspicionScore = summary.suspicionScore;
+  nextSession.totalIncidentCount = summary.totalIncidentCount;
   nextSession.mlUnavailableCount = summary.mlUnavailableCount;
 
   return nextSession;
@@ -356,6 +364,8 @@ export const syncSessionProctorSummary = async (sessionId) => {
     tabSwitchCount: summary.tabSwitchCount,
     faceNotDetectedCount: summary.faceNotDetectedCount,
     suspicionScore: summary.suspicionScore,
+    totalIncidentCount: summary.totalIncidentCount,
+    mlUnavailableCount: summary.mlUnavailableCount,
   });
 
   return summary;
