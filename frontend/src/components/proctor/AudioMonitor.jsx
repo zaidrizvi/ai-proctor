@@ -3,7 +3,7 @@ import axios from "axios";
 
 const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 const ANALYSIS_INTERVAL_MS = 1500;
-const ALERT_COOLDOWN_MS = 12000;
+const ALERT_COOLDOWN_MS = 8000;
 const AUDIO_SMOOTHING_WINDOW = 4;
 const MIN_POSITIVE_CHUNKS_TO_ALERT = 2;
 const MIN_AVERAGE_CONFIDENCE_TO_ALERT = 0.28;
