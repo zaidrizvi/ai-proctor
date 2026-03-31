@@ -5,6 +5,7 @@ const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 const NO_FACE_STREAK_TO_ALERT = 2;
 const FACE_RECOVERY_STREAK = 2;
 const MULTIPLE_FACES_STREAK_TO_ALERT = 2;
+const PRESENCE_MULTIPLE_FACES_CONFIRM_STREAK = 2;
 const HEAD_TURN_STREAK_TO_ALERT = 2;
 const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
 const HEAD_TURN_RECOVERY_STREAK = 2;
@@ -15,15 +16,16 @@ const FACE_MATCH_RECOVERY_STREAK = 2;
 const HEAD_TURN_ALERT_COOLDOWN_MS = 2000;
 const OBJECT_DETECTED_STREAK_TO_ALERT = 2;
 const OBJECT_ALERT_COOLDOWN_MS = 2000;
-const OBJECT_ANALYSIS_INTERVAL_MS = 1500;
+const OBJECT_ANALYSIS_INTERVAL_MS = 800;
 const MULTIPLE_FACES_ALERT_COOLDOWN_MS = 2000;
 const MULTIPLE_FACES_FACE_SOURCE_HOLD_MS = 1400;
-const MULTIPLE_FACES_OBJECT_SOURCE_HOLD_MS = (OBJECT_ANALYSIS_INTERVAL_MS * 2) + 400;
+const MULTIPLE_FACES_OBJECT_SOURCE_HOLD_MS = (OBJECT_ANALYSIS_INTERVAL_MS * 2) + 250;
 const MULTIPLE_FACES_FACE_PULSE_INTERVAL_MS = 700;
-const MULTIPLE_FACES_OBJECT_PULSE_INTERVAL_MS = 1400;
+const MULTIPLE_FACES_OBJECT_PULSE_INTERVAL_MS = 850;
 const MULTIPLE_FACES_STALE_DECAY_MS = 2200;
 const FACE_MISMATCH_ALERT_COOLDOWN_MS = 2000;
 const MIN_HEAD_POSE_QUALITY_FOR_ALERT = 0.46;
+const MIN_HEAD_POSE_QUALITY_FOR_NO_FACE_GRACE = 0.42;
 const MIN_FACE_CONFIDENCE_FOR_STABLE_ALERTS = 0.54;
 const MIN_FACE_AREA_RATIO_FOR_STABLE_ALERTS = 0.024;
 const MIN_FACE_AREA_RATIO_FOR_FALLBACK = 0.02;
@@ -31,8 +33,13 @@ const MIN_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.02;
 const MIN_DOWNWARD_HEAD_PITCH_SCORE_FOR_ALERT = 1.28;
 const MIN_DOWNWARD_HEAD_NOSE_SCORE_FOR_ALERT = 1.18;
 const MIN_DOWNWARD_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.16;
-const IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS = 2000;
+const DOWNWARD_HEAD_TURN_GRACE_MS = 900;
+const MIN_DOWNWARD_HEAD_GRACE_SIGNAL_SCORE = 0.92;
+const IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS = 1000;
+const IDENTITY_URGENT_VERIFY_INTERVAL_MS = 600;
 const IDENTITY_MATCH_FRESHNESS_MS = 4500;
+const IDENTITY_COMPROMISE_WINDOW_MS = 2200;
+const DETECTOR_NO_FACE_IDENTITY_GRACE_MS = 450;
 const MAX_CAPTURE_WIDTH = 1024;
 const JPEG_QUALITY = 0.9;
 
@@ -58,6 +65,12 @@ const useProctor = ({
   const verifyAnalysisInFlightRef = useRef(false);
   const lastIdentityCheckRef = useRef(0);
   const lastObjectCheckAtRef = useRef(0);
+  const lastExplicitFaceDetectedAtRef = useRef(0);
+  const lastExplicitNoFaceAtRef = useRef(0);
+  const lastValidHeadPoseAtRef = useRef(0);
+  const lastDownwardHeadPoseSignalAtRef = useRef(0);
+  const lastIdentityCompromisedAtRef = useRef(0);
+  const lastExtraPersonDetectedAtRef = useRef(0);
   const lifecycleTokenRef = useRef(0);
   const analysisCycleRef = useRef(0);
   const lastMultipleFacesDecayAtRef = useRef(0);
@@ -99,6 +112,7 @@ const useProctor = ({
     noFace: 0,
     facePresent: 0,
     multipleFaces: 0,
+    presenceMultipleFaces: 0,
     headTurned: 0,
     headTurnRecovery: 0,
     gazeAway: 0,
@@ -265,6 +279,49 @@ const useProctor = ({
     );
   }, [streamRef, videoRef]);
 
+  const hasRecentDownwardHeadPoseGrace = useCallback((now) => {
+    return (
+      now - lastValidHeadPoseAtRef.current <= DOWNWARD_HEAD_TURN_GRACE_MS &&
+      now - lastDownwardHeadPoseSignalAtRef.current <= DOWNWARD_HEAD_TURN_GRACE_MS
+    );
+  }, []);
+
+  const refreshRecentHeadPoseState = useCallback((headResult, now) => {
+    if (headResult?.status !== "fulfilled") {
+      return;
+    }
+
+    const head = headResult.value.data;
+    if (!head?.head_detected) {
+      return;
+    }
+
+    lastValidHeadPoseAtRef.current = now;
+
+    const poseQuality = Number(head.pose_quality || 0);
+    const movementScore = Number(head.combined_movement_score || head.movement_score || 0);
+    const downwardPitchScore = Number(head.downward_pitch_score || 0);
+    const downwardNoseScore = Number(head.downward_nose_score || 0);
+    const strongDownwardSignal = (
+      poseQuality >= MIN_HEAD_POSE_QUALITY_FOR_NO_FACE_GRACE &&
+      (
+        head.downward_signal === true ||
+        (
+          head.turn_axis === "downward" &&
+          (
+            movementScore >= MIN_DOWNWARD_HEAD_GRACE_SIGNAL_SCORE ||
+            downwardPitchScore >= 0.95 ||
+            downwardNoseScore >= 0.95
+          )
+        )
+      )
+    );
+
+    if (strongDownwardSignal) {
+      lastDownwardHeadPoseSignalAtRef.current = now;
+    }
+  }, []);
+
   const processFaceResult = useCallback((faceResult, now, trackerPresence, token) => {
     let faceDetectorAvailable = false;
     let detectorNoFace = false;
@@ -277,19 +334,59 @@ const useProctor = ({
     if (faceResult?.status === "fulfilled") {
       const face = faceResult.value.data;
       const noFaceFromDetector = face.event === "face_not_detected";
-      const multipleFaces =
-        face.event === "multiple_faces" || Number(face.face_count || 0) > 1;
+      const strictFaceCount = Number(
+        face.strict_face_count ?? face.reliable_face_count ?? face.face_count ?? 0
+      );
+      const presenceFaceCount = Number(
+        face.presence_face_count ?? face.raw_face_count ?? strictFaceCount ?? 0
+      );
+      const strictMultipleFaces = Boolean(
+        face.multiple_faces_strict ||
+        strictFaceCount > 1
+      );
+      const promotedPresenceOnlyMultipleFaces = Boolean(
+        !strictMultipleFaces &&
+        face.multiple_faces_presence_promoted === true
+      );
       faceConfidence = Number(face.primary_face_confidence || 0);
       faceAreaRatio = Number(face.primary_face_area_ratio || 0);
 
       faceDetectorAvailable = true;
       detectorNoFace = noFaceFromDetector;
       primaryFaceRecovered = Boolean(face.face_detected) && !noFaceFromDetector;
-      faceMultipleFacesCandidate = multipleFaces;
+      faceMultipleFacesCandidate = strictMultipleFaces;
       weakFace = primaryFaceRecovered && (
         faceConfidence < MIN_FACE_CONFIDENCE_FOR_STABLE_ALERTS ||
         faceAreaRatio < MIN_FACE_AREA_RATIO_FOR_STABLE_ALERTS
       );
+
+      if (detectorNoFace) {
+        lastExplicitNoFaceAtRef.current = now;
+      }
+
+      if (primaryFaceRecovered) {
+        lastExplicitFaceDetectedAtRef.current = now;
+      }
+
+      if (strictMultipleFaces) {
+        lastIdentityCompromisedAtRef.current = now;
+      }
+
+      if (promotedPresenceOnlyMultipleFaces) {
+        streaksRef.current.presenceMultipleFaces += 1;
+      } else {
+        streaksRef.current.presenceMultipleFaces = 0;
+      }
+
+      if (
+        promotedPresenceOnlyMultipleFaces &&
+        streaksRef.current.presenceMultipleFaces >= PRESENCE_MULTIPLE_FACES_CONFIRM_STREAK
+      ) {
+        faceMultipleFacesCandidate = true;
+        lastIdentityCompromisedAtRef.current = now;
+      }
+    } else {
+      streaksRef.current.presenceMultipleFaces = 0;
     }
 
     const trackerFallbackAllowed = (
@@ -299,13 +396,31 @@ const useProctor = ({
         !hasRecentIdentityMismatch(now)
       )
     );
+    const fallbackGraceActive = (
+      now - lastExplicitFaceDetectedAtRef.current <= DETECTOR_NO_FACE_IDENTITY_GRACE_MS
+    );
     const fallbackFacePresent = Boolean(
-      (detectorNoFace || !faceDetectorAvailable) &&
       trackerPresence?.facePresent &&
       trackerPresence?.stable &&
-      trackerFallbackAllowed
+      (
+        (!faceDetectorAvailable && trackerFallbackAllowed) ||
+        (
+          detectorNoFace &&
+          trackerFallbackAllowed &&
+          (
+            !hasReferenceIdentity ||
+            fallbackGraceActive
+          )
+        )
+      )
     );
-    const noFace = faceDetectorAvailable && detectorNoFace && !fallbackFacePresent;
+    const downwardHeadPoseGraceActive = hasRecentDownwardHeadPoseGrace(now);
+    const noFace = (
+      faceDetectorAvailable &&
+      detectorNoFace &&
+      !fallbackFacePresent &&
+      !downwardHeadPoseGraceActive
+    );
     const faceRecovered = (
       (faceDetectorAvailable && primaryFaceRecovered) ||
       fallbackFacePresent
@@ -346,7 +461,10 @@ const useProctor = ({
     }
 
     if (faceMultipleFacesCandidate) {
-      triggerMultipleFacesAlert("face", "Multiple faces detected", now, token);
+      const description = streaksRef.current.presenceMultipleFaces >= PRESENCE_MULTIPLE_FACES_CONFIRM_STREAK
+        ? "Multiple faces detected (confirmed across face checks)"
+        : "Multiple faces detected";
+      triggerMultipleFacesAlert("face", description, now, token);
     } else {
       clearMultipleFacesSignal("face", now);
     }
@@ -358,6 +476,7 @@ const useProctor = ({
       noFace: shouldTreatAsNoFace,
       weakFace: Boolean(weakFace || trackerPresence?.weak),
       fallbackFacePresent,
+      detectorNoFace,
       identityMismatchVisible,
       faceConfidence,
       faceAreaRatio,
@@ -367,6 +486,7 @@ const useProctor = ({
     clearMultipleFacesSignal,
     decayStreak,
     emitAlert,
+    hasRecentDownwardHeadPoseGrace,
     hasFreshVerifiedIdentity,
     hasRecentIdentityMismatch,
     hasReferenceIdentity,
@@ -374,10 +494,11 @@ const useProctor = ({
   ]);
 
   const processHeadResult = useCallback((headResult, gazeResult, now, faceState = {}, token) => {
+    const recentDownwardHeadPoseGraceActive = hasRecentDownwardHeadPoseGrace(now);
     const shouldSuppressHeadTurn =
       suppressHeadTurnAlerts ||
-      faceState.noFace ||
-      faceState.identityMismatchVisible;
+      faceState.identityMismatchVisible ||
+      (faceState.noFace && !recentDownwardHeadPoseGraceActive);
 
     const recoverHeadTurnSignal = (clearImmediately = false) => {
       decayStreak("headTurned");
@@ -385,6 +506,26 @@ const useProctor = ({
 
       if (clearImmediately || streaksRef.current.headTurnRecovery >= HEAD_TURN_RECOVERY_STREAK) {
         activeFlagsRef.current.headTurned = false;
+      }
+    };
+
+    const commitHeadTurnSignal = (isStrong = false) => {
+      streaksRef.current.headTurned += 1;
+      streaksRef.current.headTurnRecovery = 0;
+
+      const headTurnThreshold = isStrong
+        ? STRONG_HEAD_TURN_STREAK_TO_ALERT
+        : HEAD_TURN_STREAK_TO_ALERT;
+
+      if (
+        streaksRef.current.headTurned >= headTurnThreshold &&
+        !activeFlagsRef.current.headTurned &&
+        now - lastAlertAtRef.current.headTurned >= HEAD_TURN_ALERT_COOLDOWN_MS
+      ) {
+        activeFlagsRef.current.headTurned = true;
+        lastAlertAtRef.current.headTurned = now;
+        countersRef.current.head_turned += 1;
+        emitAlert(token, "head_turned", "medium", "Student turned head away from screen");
       }
     };
 
@@ -396,10 +537,22 @@ const useProctor = ({
     }
 
     if (headResult?.status !== "fulfilled") {
+      if (faceState.noFace && recentDownwardHeadPoseGraceActive) {
+        commitHeadTurnSignal();
+      }
       return;
     }
 
     const head = headResult.value.data;
+    if (!head?.head_detected) {
+      if (faceState.noFace && recentDownwardHeadPoseGraceActive) {
+        commitHeadTurnSignal();
+      } else {
+        recoverHeadTurnSignal();
+      }
+      return;
+    }
+
     const gazeCurrentlyAway = gazeResult?.status === "fulfilled"
       ? gazeResult.value.data?.event === "gaze_away"
       : activeFlagsRef.current.gazeAway;
@@ -418,6 +571,10 @@ const useProctor = ({
     );
 
     if (poseQuality < MIN_HEAD_POSE_QUALITY_FOR_ALERT) {
+      if (faceState.noFace && recentDownwardHeadPoseGraceActive) {
+        commitHeadTurnSignal();
+        return;
+      }
       recoverHeadTurnSignal();
       return;
     }
@@ -437,27 +594,12 @@ const useProctor = ({
       movementScore >= MIN_HEAD_MOVEMENT_SCORE_FOR_ALERT &&
       !borderlineDownwardTurn
     ) {
-      streaksRef.current.headTurned += 1;
-      streaksRef.current.headTurnRecovery = 0;
+      commitHeadTurnSignal(obviousTurn);
+      return;
     } else {
       recoverHeadTurnSignal();
     }
-
-    const headTurnThreshold = obviousTurn
-      ? STRONG_HEAD_TURN_STREAK_TO_ALERT
-      : HEAD_TURN_STREAK_TO_ALERT;
-
-    if (
-      streaksRef.current.headTurned >= headTurnThreshold &&
-      !activeFlagsRef.current.headTurned &&
-      now - lastAlertAtRef.current.headTurned >= HEAD_TURN_ALERT_COOLDOWN_MS
-    ) {
-      activeFlagsRef.current.headTurned = true;
-      lastAlertAtRef.current.headTurned = now;
-      countersRef.current.head_turned += 1;
-      emitAlert(token, "head_turned", "medium", "Student turned head away from screen");
-    }
-  }, [decayStreak, emitAlert, suppressHeadTurnAlerts]);
+  }, [decayStreak, emitAlert, hasRecentDownwardHeadPoseGrace, suppressHeadTurnAlerts]);
 
   const processGazeResult = useCallback((gazeResult, faceState = {}, token) => {
     let gazeLookingAway = false;
@@ -548,6 +690,8 @@ const useProctor = ({
     }
 
     if (hasExtraPerson) {
+      lastExtraPersonDetectedAtRef.current = now;
+      lastIdentityCompromisedAtRef.current = now;
       triggerMultipleFacesAlert("object", "Multiple people detected in camera view", now, token);
     } else {
       clearMultipleFacesSignal("object", now);
@@ -563,6 +707,20 @@ const useProctor = ({
     const verification = response.data;
     identityStateRef.current.lastCheckAt = now;
     identityStateRef.current.reason = verification.reason || "";
+    const identityCompromised = Boolean(
+      verification.identity_compromised ||
+      verification.multiple_faces_strict === true ||
+      verification.reason === "multiple_current_faces" ||
+      verification.multiple_faces
+    );
+    const presenceMultipleFacesPendingConfirmation = Boolean(
+      verification.reason === "presence_multiple_faces_pending_confirmation" ||
+      (
+        verification.multiple_faces_presence_promoted === true &&
+        verification.identity_compromised !== true &&
+        verification.multiple_faces !== true
+      )
+    );
     const mismatchDetected =
       verification.verification_checked &&
       verification.verification_reliable !== false &&
@@ -571,6 +729,64 @@ const useProctor = ({
       verification.verification_checked &&
       verification.verification_reliable !== false &&
       verification.verified === true;
+
+    if (presenceMultipleFacesPendingConfirmation) {
+      streaksRef.current.faceVerified = 0;
+      identityStateRef.current.status = verification.reason || "presence_pending_confirmation";
+
+      if (streaksRef.current.presenceMultipleFaces >= PRESENCE_MULTIPLE_FACES_CONFIRM_STREAK) {
+        lastIdentityCompromisedAtRef.current = now;
+        streaksRef.current.faceMismatch = FACE_MISMATCH_STREAK_TO_ALERT;
+        identityStateRef.current.lastMismatchAt = now;
+        identityStateRef.current.status = "compromised";
+        triggerMultipleFacesAlert(
+          "face",
+          "Multiple faces detected during identity verification (confirmed across checks)",
+          now,
+          token
+        );
+
+        if (now - lastAlertAtRef.current.faceMismatch >= FACE_MISMATCH_ALERT_COOLDOWN_MS) {
+          lastAlertAtRef.current.faceMismatch = now;
+          countersRef.current.face_mismatch += 1;
+          emitAlert(
+            token,
+            "face_mismatch",
+            "high",
+            "Identity compromised: promoted multiple-face signal persisted across verification checks"
+          );
+        }
+      }
+
+      return;
+    }
+
+    if (identityCompromised) {
+      lastIdentityCompromisedAtRef.current = now;
+      streaksRef.current.faceMismatch = FACE_MISMATCH_STREAK_TO_ALERT;
+      streaksRef.current.faceVerified = 0;
+      identityStateRef.current.lastMismatchAt = now;
+      identityStateRef.current.status = "compromised";
+      triggerMultipleFacesAlert(
+        "face",
+        "Multiple faces detected during identity verification",
+        now,
+        token
+      );
+
+      if (now - lastAlertAtRef.current.faceMismatch >= FACE_MISMATCH_ALERT_COOLDOWN_MS) {
+        lastAlertAtRef.current.faceMismatch = now;
+        countersRef.current.face_mismatch += 1;
+        emitAlert(
+          token,
+          "face_mismatch",
+          "high",
+          "Identity compromised: multiple faces visible during verification"
+        );
+      }
+
+      return;
+    }
 
     if (mismatchDetected) {
       streaksRef.current.faceMismatch += 1;
@@ -594,6 +810,7 @@ const useProctor = ({
     ) {
       lastAlertAtRef.current.faceMismatch = now;
       countersRef.current.face_mismatch += 1;
+      lastIdentityCompromisedAtRef.current = now;
       emitAlert(
         token,
         "face_mismatch",
@@ -603,7 +820,7 @@ const useProctor = ({
     } else if (streaksRef.current.faceVerified >= FACE_MATCH_RECOVERY_STREAK) {
       streaksRef.current.faceMismatch = 0;
     }
-  }, [decayStreak, emitAlert, isTokenActive]);
+  }, [decayStreak, emitAlert, isTokenActive, triggerMultipleFacesAlert]);
 
   const scheduleBackgroundTasks = useCallback((frame, token, faceState = {}, trackerPresence = {}) => {
     const now = Date.now();
@@ -630,17 +847,25 @@ const useProctor = ({
         });
     }
 
+    const recentCompromiseSignal = (
+      now - lastIdentityCompromisedAtRef.current <= IDENTITY_COMPROMISE_WINDOW_MS ||
+      now - lastExtraPersonDetectedAtRef.current <= IDENTITY_COMPROMISE_WINDOW_MS ||
+      now - lastExplicitNoFaceAtRef.current <= IDENTITY_COMPROMISE_WINDOW_MS
+    );
     const effectiveVerifyIntervalMs = Math.min(
       verifyIntervalMs,
-      IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS
+      recentCompromiseSignal
+        ? IDENTITY_URGENT_VERIFY_INTERVAL_MS
+        : IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS
     );
     const shouldAttemptIdentityCheck = (
       hasReferenceIdentity &&
-      !faceState.multipleFaces &&
       (
+        faceState.multipleFaces ||
         faceState.facePresent ||
         faceState.fallbackFacePresent ||
-        trackerPresence?.facePresent
+        trackerPresence?.facePresent ||
+        recentCompromiseSignal
       )
     );
     const shouldVerifyIdentity =
@@ -811,6 +1036,7 @@ const useProctor = ({
       countersRef.current.total_checks += 1;
       refreshMultipleFacesState(now);
       const trackerPresence = deriveTrackerFacePresence(headRes, gazeRes);
+      refreshRecentHeadPoseState(headRes, now);
       const faceState = processFaceResult(faceRes, now, trackerPresence, token);
       processHeadResult(headRes, gazeRes, now, faceState, token);
       processGazeResult(gazeRes, faceState, token);
@@ -842,6 +1068,7 @@ const useProctor = ({
     processFaceResult,
     processHeadResult,
     processGazeResult,
+    refreshRecentHeadPoseState,
     refreshMultipleFacesState,
     scheduleBackgroundTasks,
   ]);
@@ -893,6 +1120,12 @@ const useProctor = ({
       verifyAnalysisInFlightRef.current = false;
       lastObjectCheckAtRef.current = 0;
       lastIdentityCheckRef.current = 0;
+      lastExplicitFaceDetectedAtRef.current = 0;
+      lastExplicitNoFaceAtRef.current = 0;
+      lastValidHeadPoseAtRef.current = 0;
+      lastDownwardHeadPoseSignalAtRef.current = 0;
+      lastIdentityCompromisedAtRef.current = 0;
+      lastExtraPersonDetectedAtRef.current = 0;
       analysisCycleRef.current = 0;
       lastMultipleFacesDecayAtRef.current = 0;
       identityStateRef.current = {
@@ -925,6 +1158,7 @@ const useProctor = ({
         noFace: 0,
         facePresent: 0,
         multipleFaces: 0,
+        presenceMultipleFaces: 0,
         headTurned: 0,
         headTurnRecovery: 0,
         gazeAway: 0,
