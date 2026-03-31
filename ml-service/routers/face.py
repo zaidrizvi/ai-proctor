@@ -13,11 +13,12 @@ router = APIRouter()
 
 FACE_CONFIDENCE_THRESHOLD = 0.5
 FACE_PRESENCE_CONFIDENCE_THRESHOLD = 0.38
+VERIFY_FACE_CONFIDENCE_THRESHOLD = 0.44
 MIN_FACE_PRESENCE_AREA_RATIO = 0.02
 MIN_REFERENCE_FACE_AREA_RATIO = 0.05
 MIN_CURRENT_FACE_AREA_RATIO = 0.04
-MIN_VERIFICATION_FACE_AREA_RATIO = 0.05
-MIN_VERIFICATION_FACE_CONFIDENCE = 0.6
+MIN_VERIFICATION_FACE_AREA_RATIO = 0.032
+MIN_VERIFICATION_FACE_CONFIDENCE = 0.5
 SECONDARY_FACE_MIN_AREA_RATIO = 0.012
 SECONDARY_FACE_MIN_RELATIVE_SIZE = 0.2
 PRESENCE_SECONDARY_FACE_MIN_AREA_RATIO = 0.01
@@ -460,6 +461,7 @@ async def verify_face(req: VerifyRequest):
         current_faces, current_backend = extract_confident_faces(
             current_frame,
             backends=VERIFY_DETECTOR_BACKENDS,
+            min_confidence=VERIFY_FACE_CONFIDENCE_THRESHOLD,
         )
         current_presence_faces, current_presence_backend = extract_confident_faces(
             current_frame,
@@ -519,6 +521,9 @@ async def verify_face(req: VerifyRequest):
                 "primary_face_confidence": round(current_best_face["confidence"], 4) if current_best_face else 0.0,
                 "primary_face_area_ratio": round(current_best_face["area_ratio"], 4) if current_best_face else 0.0,
                 "verification_debug": {
+                    "verify_face_confidence_threshold": VERIFY_FACE_CONFIDENCE_THRESHOLD,
+                    "min_verification_face_area_ratio": MIN_VERIFICATION_FACE_AREA_RATIO,
+                    "min_verification_face_confidence": MIN_VERIFICATION_FACE_CONFIDENCE,
                     "strict_face_count_debug": current_reliable_face_debug,
                     "presence_face_count_debug": current_presence_face_debug,
                     "presence_promotion": current_presence_candidate_debug,
@@ -547,6 +552,9 @@ async def verify_face(req: VerifyRequest):
                 "primary_face_confidence": round(current_best_face["confidence"], 4) if current_best_face else 0.0,
                 "primary_face_area_ratio": round(current_best_face["area_ratio"], 4) if current_best_face else 0.0,
                 "verification_debug": {
+                    "verify_face_confidence_threshold": VERIFY_FACE_CONFIDENCE_THRESHOLD,
+                    "min_verification_face_area_ratio": MIN_VERIFICATION_FACE_AREA_RATIO,
+                    "min_verification_face_confidence": MIN_VERIFICATION_FACE_CONFIDENCE,
                     "strict_face_count_debug": current_reliable_face_debug,
                     "presence_face_count_debug": current_presence_face_debug,
                     "presence_promotion": current_presence_candidate_debug,
@@ -573,6 +581,9 @@ async def verify_face(req: VerifyRequest):
                 "multiple_faces_presence_candidate": multiple_current_faces_presence_candidate,
                 "multiple_faces_presence_promoted": presence_candidate_promoted,
                 "verification_debug": {
+                    "verify_face_confidence_threshold": VERIFY_FACE_CONFIDENCE_THRESHOLD,
+                    "min_verification_face_area_ratio": MIN_VERIFICATION_FACE_AREA_RATIO,
+                    "min_verification_face_confidence": MIN_VERIFICATION_FACE_CONFIDENCE,
                     "strict_face_count_debug": current_reliable_face_debug,
                     "presence_face_count_debug": current_presence_face_debug,
                     "presence_promotion": current_presence_candidate_debug,
@@ -601,6 +612,9 @@ async def verify_face(req: VerifyRequest):
                 "primary_face_confidence": round(current_best_face["confidence"], 4),
                 "primary_face_area_ratio": round(current_best_face["area_ratio"], 4),
                 "verification_debug": {
+                    "verify_face_confidence_threshold": VERIFY_FACE_CONFIDENCE_THRESHOLD,
+                    "min_verification_face_area_ratio": MIN_VERIFICATION_FACE_AREA_RATIO,
+                    "min_verification_face_confidence": MIN_VERIFICATION_FACE_CONFIDENCE,
                     "strict_face_count_debug": current_reliable_face_debug,
                     "presence_face_count_debug": current_presence_face_debug,
                     "presence_promotion": current_presence_candidate_debug,
@@ -664,6 +678,9 @@ async def verify_face(req: VerifyRequest):
             "primary_face_confidence": round(current_best_face["confidence"], 4),
             "primary_face_area_ratio": round(current_best_face["area_ratio"], 4),
             "verification_debug": {
+                "verify_face_confidence_threshold": VERIFY_FACE_CONFIDENCE_THRESHOLD,
+                "min_verification_face_area_ratio": MIN_VERIFICATION_FACE_AREA_RATIO,
+                "min_verification_face_confidence": MIN_VERIFICATION_FACE_CONFIDENCE,
                 "strict_face_count_debug": current_reliable_face_debug,
                 "presence_face_count_debug": current_presence_face_debug,
                 "presence_promotion": current_presence_candidate_debug,

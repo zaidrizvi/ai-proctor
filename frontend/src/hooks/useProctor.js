@@ -15,6 +15,7 @@ const FACE_MISMATCH_STREAK_TO_ALERT = 2;
 const FACE_MATCH_RECOVERY_STREAK = 2;
 const HEAD_TURN_ALERT_COOLDOWN_MS = 2000;
 const OBJECT_DETECTED_STREAK_TO_ALERT = 2;
+const PRIORITY_OBJECT_DETECTED_STREAK_TO_ALERT = 1;
 const OBJECT_ALERT_COOLDOWN_MS = 2000;
 const OBJECT_ANALYSIS_INTERVAL_MS = 800;
 const MULTIPLE_FACES_ALERT_COOLDOWN_MS = 2000;
@@ -42,6 +43,7 @@ const IDENTITY_COMPROMISE_WINDOW_MS = 2200;
 const DETECTOR_NO_FACE_IDENTITY_GRACE_MS = 450;
 const MAX_CAPTURE_WIDTH = 1024;
 const JPEG_QUALITY = 0.9;
+const PRIORITY_SUSPICIOUS_OBJECTS = new Set(["cell phone", "book", "remote"]);
 
 const useProctor = ({
   videoRef,
@@ -661,14 +663,20 @@ const useProctor = ({
     const nonPersonSuspicious = (objects.suspicious_objects || []).filter(
       (obj) => obj.object !== "extra person detected"
     );
+    const hasPrioritySuspiciousObject = nonPersonSuspicious.some((obj) => (
+      PRIORITY_SUSPICIOUS_OBJECTS.has(obj.object)
+    ));
 
     if (nonPersonSuspicious.length > 0) {
       streaksRef.current.objectDetected += 1;
       const cooldownElapsed =
         now - lastAlertAtRef.current.objectDetected >= OBJECT_ALERT_COOLDOWN_MS;
+      const requiredObjectStreak = hasPrioritySuspiciousObject
+        ? PRIORITY_OBJECT_DETECTED_STREAK_TO_ALERT
+        : OBJECT_DETECTED_STREAK_TO_ALERT;
 
       if (
-        streaksRef.current.objectDetected >= OBJECT_DETECTED_STREAK_TO_ALERT &&
+        streaksRef.current.objectDetected >= requiredObjectStreak &&
         (!activeFlagsRef.current.objectDetected || cooldownElapsed)
       ) {
         activeFlagsRef.current.objectDetected = true;

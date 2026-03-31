@@ -151,6 +151,22 @@ const getMissingBaselineParts = (baseline) => {
   return missing;
 };
 
+const isValidHeadPoseBaseline = (baseline) => {
+  if (!baseline || typeof baseline !== "object") {
+    return false;
+  }
+
+  return BASELINE_SAMPLE_KEYS.every((key) => Number.isFinite(Number(baseline[key])));
+};
+
+const getHeadPoseBaselineStorageKey = (examId, studentId) => {
+  if (!examId || !studentId) {
+    return "";
+  }
+
+  return `exam-head-pose-baseline:${studentId}:${examId}`;
+};
+
 // ── Webcam Monitor ────────────────────────────────────────────
 const WebcamMonitor = ({ onAlert, videoRef: externalVideoRef, streamRef: externalStreamRef }) => {
   const internalRef = useRef(null);
@@ -300,6 +316,7 @@ const ExamInterface = () => {
   const [result, setResult] = useState(null);
   const [referenceFace, setReferenceFace] = useState("");
   const [referenceFaceEmbedding, setReferenceFaceEmbedding] = useState([]);
+  const [studentId, setStudentId] = useState("");
   const [headPoseBaseline, setHeadPoseBaseline] = useState(null);
   const [baselineCalibrationInfo, setBaselineCalibrationInfo] = useState({
     status: "idle",
@@ -421,6 +438,53 @@ const ExamInterface = () => {
     setMlFramePreview(frame);
   }, []);
 
+  const persistHeadPoseBaseline = useCallback((baseline, debug = null) => {
+    const storageKey = getHeadPoseBaselineStorageKey(examId, studentId);
+    if (!storageKey || !isValidHeadPoseBaseline(baseline)) {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify({
+        head: baseline,
+        debug,
+        savedAt: Date.now(),
+      }));
+    } catch {
+      // Baseline persistence is a convenience for refresh/re-entry and should stay non-blocking.
+    }
+  }, [examId, studentId]);
+
+  const restoreHeadPoseBaseline = useCallback(() => {
+    const storageKey = getHeadPoseBaselineStorageKey(examId, studentId);
+    if (!storageKey) {
+      return false;
+    }
+
+    try {
+      const rawValue = window.localStorage.getItem(storageKey);
+      if (!rawValue) {
+        return false;
+      }
+
+      const parsedValue = JSON.parse(rawValue);
+      const restoredBaseline = parsedValue?.head || null;
+      if (!isValidHeadPoseBaseline(restoredBaseline)) {
+        return false;
+      }
+
+      setHeadPoseBaseline(restoredBaseline);
+      setBaselineCalibrationInfo({
+        status: "ready",
+        missing: [],
+        debug: parsedValue?.debug || null,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }, [examId, studentId]);
+
   // ── useProctor hook ─────────────────────────────────────────
   const {
     incrementTabSwitch,
@@ -443,6 +507,30 @@ const ExamInterface = () => {
     intervalMs: 800,
     verifyIntervalMs: 30000,
   });
+
+  useEffect(() => {
+    if (headPoseBaseline || !studentId) {
+      return;
+    }
+
+    void restoreHeadPoseBaseline();
+  }, [headPoseBaseline, restoreHeadPoseBaseline, studentId]);
+
+  useEffect(() => {
+    if (
+      baselineCalibrationInfo.status !== "ready" ||
+      !isValidHeadPoseBaseline(headPoseBaseline)
+    ) {
+      return;
+    }
+
+    persistHeadPoseBaseline(headPoseBaseline, baselineCalibrationInfo.debug || null);
+  }, [
+    baselineCalibrationInfo.debug,
+    baselineCalibrationInfo.status,
+    headPoseBaseline,
+    persistHeadPoseBaseline,
+  ]);
 
   // ── init exam ───────────────────────────────────────────────
   useEffect(() => {
@@ -473,6 +561,7 @@ const ExamInterface = () => {
   const loadFaceReference = async () => {
     try {
       const { data } = await api.get("/auth/me");
+      setStudentId(data._id || "");
       const savedReference = data.faceImagePath || "";
       const savedReferenceEmbedding = Array.isArray(data.faceEmbedding) ? data.faceEmbedding : [];
       setReferenceFace(savedReference);
@@ -485,6 +574,7 @@ const ExamInterface = () => {
         setIdentityMessage("No reference face saved yet. Capture one before the exam for identity checks.");
       }
     } catch {
+      setStudentId("");
       setIdentityStatus("unavailable");
       setIdentityMessage("Profile lookup failed. Face verification will run only if a reference is available.");
     }
@@ -776,6 +866,19 @@ const ExamInterface = () => {
   }, [captureIdentityFrame, examId, session?._id]);
 
   const queueBaselineCalibration = useCallback(async () => {
+    if (isValidHeadPoseBaseline(headPoseBaseline)) {
+      setBaselineCalibrationInfo((prev) => ({
+        status: "ready",
+        missing: [],
+        debug: prev.debug,
+      }));
+      return {
+        head: headPoseBaseline,
+        ready: true,
+        debug: baselineCalibrationInfo.debug || null,
+      };
+    }
+
     if (baselineCalibrationRef.current) {
       return baselineCalibrationRef.current;
     }
@@ -817,7 +920,7 @@ const ExamInterface = () => {
       });
 
     return baselineCalibrationRef.current;
-  }, [calibrateAttentionBaseline]);
+  }, [baselineCalibrationInfo.debug, calibrateAttentionBaseline, headPoseBaseline]);
 
   useEffect(() => {
     if (baselineRetryTimeoutRef.current) {
