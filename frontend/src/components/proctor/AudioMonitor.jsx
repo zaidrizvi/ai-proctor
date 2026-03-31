@@ -2,15 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 
 const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
-const ANALYSIS_INTERVAL_MS = 1500;
-const ALERT_COOLDOWN_MS = 1500;
-const AUDIO_SMOOTHING_WINDOW = 4;
-const MIN_POSITIVE_CHUNKS_TO_ALERT = 2;
-const MIN_AVERAGE_CONFIDENCE_TO_ALERT = 0.28;
-const MIN_BACKEND_CONFIDENCE_TO_COUNT = 0.22;
-const MIN_BACKEND_SPEECH_DURATION_MS = 280;
-const IMMEDIATE_BACKEND_CONFIDENCE_THRESHOLD = 0.46;
-const IMMEDIATE_BACKEND_SPEECH_DURATION_MS = 650;
+const ANALYSIS_INTERVAL_MS = 650;
+const MAX_ANALYSIS_WINDOW_MS = 950;
+const MAX_BUFFERED_AUDIO_MS = 1400;
+const ALERT_COOLDOWN_MS = 1200;
+const AUDIO_SMOOTHING_WINDOW = 3;
+const MIN_POSITIVE_CHUNKS_FOR_SUSTAINED_STATUS = 2;
 const CLIENT_RMS_THRESHOLD = 0.014;
 const CLIENT_PEAK_THRESHOLD = 0.07;
 const CLIENT_MIN_ZCR = 0.022;
@@ -64,21 +61,28 @@ const uint8ToBase64 = (bytes) => {
 
 const getSmoothedAudioDecision = (history) => {
   if (!Array.isArray(history) || history.length === 0) {
-    return { detected: false, positiveCount: 0, averageConfidence: 0 };
+    return {
+      detected: false,
+      positiveCount: 0,
+      positiveAverageConfidence: 0,
+      rawAverageConfidence: 0,
+    };
   }
 
-  const positiveSamples = history.filter((sample) => sample.detected);
-  const averageConfidence = history.reduce(
+  const positiveSamples = history.filter((sample) => sample.backendDetected);
+  const positiveAverageConfidence = positiveSamples.length > 0
+    ? positiveSamples.reduce((sum, sample) => sum + sample.rawConfidence, 0) / positiveSamples.length
+    : 0;
+  const rawAverageConfidence = history.reduce(
     (sum, sample) => sum + sample.confidence,
     0
-  ) / history.length;
+  ) / Math.max(history.length, 1);
 
   return {
-    detected:
-      positiveSamples.length >= MIN_POSITIVE_CHUNKS_TO_ALERT &&
-      averageConfidence >= MIN_AVERAGE_CONFIDENCE_TO_ALERT,
+    detected: positiveSamples.length >= MIN_POSITIVE_CHUNKS_FOR_SUSTAINED_STATUS,
     positiveCount: positiveSamples.length,
-    averageConfidence,
+    positiveAverageConfidence,
+    rawAverageConfidence,
   };
 };
 
@@ -190,8 +194,15 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
       }
 
       analyzingRef.current = true;
-      const chunk = new Float32Array(sampleBufferRef.current);
+      const maxSamples = Math.max(
+        1,
+        Math.round((sampleRate * MAX_ANALYSIS_WINDOW_MS) / 1000)
+      );
+      const chunkSamples = sampleBufferRef.current.length > maxSamples
+        ? sampleBufferRef.current.slice(-maxSamples)
+        : [...sampleBufferRef.current];
       sampleBufferRef.current = [];
+      const chunk = new Float32Array(chunkSamples);
 
       const clientMetrics = getClientSpeechMetrics(chunk);
 
@@ -211,43 +222,32 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
         );
         const backendPeakProbability = Number(data.speech_probability_peak || 0);
         const backendModel = data.vad_model || "audio_vad";
-        const backendStrongEnough =
-          backendDetected &&
-          (
-            backendConfidence >= MIN_BACKEND_CONFIDENCE_TO_COUNT ||
-            backendSpeechDurationMs >= MIN_BACKEND_SPEECH_DURATION_MS
-          );
 
         analysisHistoryRef.current = [
           ...analysisHistoryRef.current,
           {
-            detected: backendStrongEnough,
-            confidence: backendStrongEnough ? backendConfidence : 0,
+            backendDetected,
+            confidence: backendConfidence,
+            rawConfidence: backendConfidence,
           },
         ].slice(-AUDIO_SMOOTHING_WINDOW);
 
         const smoothedDecision = getSmoothedAudioDecision(analysisHistoryRef.current);
-        const immediateDetection =
-          backendStrongEnough &&
-          (
-            backendConfidence >= IMMEDIATE_BACKEND_CONFIDENCE_THRESHOLD ||
-            backendSpeechDurationMs >= IMMEDIATE_BACKEND_SPEECH_DURATION_MS
-          );
+        const sustainedDetection = smoothedDecision.detected;
+        const shouldShowDetectedState = backendDetected || sustainedDetection;
 
-        if (smoothedDecision.detected || immediateDetection) {
+        if (shouldShowDetectedState) {
           setStatus("detected");
 
-          if (cooldownElapsed) {
+          if (backendDetected && cooldownElapsed) {
             lastAlertAtRef.current = now;
             onAudioDetected?.({
               ...data,
-              speech_detected: backendStrongEnough,
-              speech_confidence: Number(
-                Math.max(
-                  smoothedDecision.averageConfidence,
-                  backendStrongEnough ? backendConfidence : 0
-                ).toFixed(4)
-              ),
+              speech_detected: backendDetected,
+              speech_confidence: Number(backendConfidence.toFixed(4)),
+              raw_backend_speech_confidence: Number(backendConfidence.toFixed(4)),
+              frontend_smoothed_confidence: Number(smoothedDecision.positiveAverageConfidence.toFixed(4)),
+              frontend_history_average_confidence: Number(smoothedDecision.rawAverageConfidence.toFixed(4)),
               vad_model: backendModel,
               speech_probability_peak: Number(backendPeakProbability.toFixed(4)),
               speech_duration_ms: backendSpeechDurationMs,
@@ -257,7 +257,8 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
               client_voice_like: clientMetrics.speechLike,
               temporal_positive_chunks: smoothedDecision.positiveCount,
               temporal_window_size: analysisHistoryRef.current.length,
-              temporal_smoothed: smoothedDecision.detected,
+              temporal_smoothed: sustainedDetection,
+              frontend_alert_source: "backend_detected",
             });
           }
 
@@ -282,8 +283,8 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
-            echoCancellation: false,
-            noiseSuppression: false,
+            echoCancellation: true,
+            noiseSuppression: true,
             autoGainControl: true,
           },
           video: false,
@@ -313,6 +314,13 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
 
           const input = event.inputBuffer.getChannelData(0);
           sampleBufferRef.current.push(...input);
+          const maxBufferedSamples = Math.max(
+            1,
+            Math.round((audioContext.sampleRate * MAX_BUFFERED_AUDIO_MS) / 1000)
+          );
+          if (sampleBufferRef.current.length > maxBufferedSamples) {
+            sampleBufferRef.current = sampleBufferRef.current.slice(-maxBufferedSamples);
+          }
 
           const now = Date.now();
           if (now - lastSentAtRef.current >= ANALYSIS_INTERVAL_MS) {

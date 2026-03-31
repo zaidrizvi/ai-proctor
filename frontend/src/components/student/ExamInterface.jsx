@@ -27,7 +27,7 @@ const EXAM_AUDIO_CONSTRAINTS = {
 };
 const TAB_SWITCH_COOLDOWN_MS = 1500;
 const EVENT_LOG_COOLDOWNS_MS = {
-  audio_detected: 1500,
+  audio_detected: 1200,
   head_turned: 2000,
   gaze_away: 7000,
   face_not_detected: 2000,
@@ -40,17 +40,35 @@ const EVENT_LOG_COOLDOWNS_MS = {
   ml_service_unavailable: 30000,
 };
 const LIVE_ALERT_LIMIT = 4;
-const BASELINE_MIN_POSE_QUALITY = 0.55;
+const BASELINE_MIN_POSE_QUALITY = 0.56;
 const BASELINE_RETRY_DELAY_MS = 3500;
 const BASELINE_CAPTURE_ATTEMPTS = 18;
-const BASELINE_CAPTURE_PAUSE_MS = 250;
+const BASELINE_CAPTURE_PAUSE_MS = 220;
+const BASELINE_TARGET_HEAD_SAMPLES = 6;
+const BASELINE_MIN_HEAD_SAMPLES = 5;
+const BASELINE_MAX_MOVEMENT_SCORE = 0.95;
+const BASELINE_MAX_COMBINED_MOVEMENT_SCORE = 1.02;
 const BASELINE_MAX_HEAD_DELTA = {
   pitch: 8,
-  yaw: 8,
+  yaw: 7.5,
   roll: 7,
   nose_offset_x: 0.055,
   nose_offset_y: 0.05,
 };
+const BASELINE_MAX_HEAD_SPREAD = {
+  pitch: 6.5,
+  yaw: 5.5,
+  roll: 6,
+  nose_offset_x: 0.042,
+  nose_offset_y: 0.04,
+};
+const BASELINE_SAMPLE_KEYS = [
+  "pitch",
+  "yaw",
+  "roll",
+  "nose_offset_x",
+  "nose_offset_y",
+];
 const EVENT_LABELS = {
   face_not_detected: "Face Missing",
   camera_frame_unavailable: "Camera Frame Unavailable",
@@ -97,6 +115,30 @@ const summarizeSamples = (samples, keys) => {
   });
 
   return summarized;
+};
+
+const measureSampleSpread = (samples, keys) => {
+  if (!Array.isArray(samples) || samples.length === 0) {
+    return null;
+  }
+
+  const spread = {};
+  keys.forEach((key) => {
+    const values = samples.map((sample) => Number(sample[key]));
+    spread[key] = Math.max(...values) - Math.min(...values);
+  });
+
+  return spread;
+};
+
+const isSpreadConsistent = (spread, maxSpread) => {
+  if (!spread) {
+    return false;
+  }
+
+  return Object.entries(maxSpread).every(([key, limit]) => {
+    return Number(spread[key] || 0) <= limit;
+  });
 };
 
 const getMissingBaselineParts = (baseline) => {
@@ -262,6 +304,7 @@ const ExamInterface = () => {
   const [baselineCalibrationInfo, setBaselineCalibrationInfo] = useState({
     status: "idle",
     missing: [],
+    debug: null,
   });
   const [identityStatus, setIdentityStatus] = useState("loading");
   const [identityMessage, setIdentityMessage] = useState("Checking face verification status...");
@@ -646,8 +689,11 @@ const ExamInterface = () => {
   const calibrateAttentionBaseline = useCallback(async () => {
     const headSamples = [];
     let lastAcceptedHeadSample = null;
+    let poseQualityTotal = 0;
+    let attemptsUsed = 0;
 
     for (let attempt = 0; attempt < BASELINE_CAPTURE_ATTEMPTS; attempt += 1) {
+      attemptsUsed = attempt + 1;
       const frame = await captureIdentityFrame();
       if (!frame) {
         await new Promise((resolve) => window.setTimeout(resolve, BASELINE_CAPTURE_PAUSE_MS));
@@ -663,7 +709,15 @@ const ExamInterface = () => {
         if (
           headData.head_detected &&
           Number(headData.pose_quality || 0) >= BASELINE_MIN_POSE_QUALITY &&
-          !headData.looking_away
+          !headData.obvious_turn &&
+          !headData.clear_yaw_turn &&
+          Number(headData.movement_score || 0) <= BASELINE_MAX_MOVEMENT_SCORE &&
+          Number(headData.combined_movement_score || 0) <= BASELINE_MAX_COMBINED_MOVEMENT_SCORE &&
+          !(
+            headData.downward_signal &&
+            (headData.turn_axis || "none") === "downward" &&
+            Number(headData.combined_movement_score || 0) >= 0.9
+          )
         ) {
           const headSample = {
             pitch: headData.pitch,
@@ -676,29 +730,48 @@ const ExamInterface = () => {
           if (isStableAgainstPrevious(lastAcceptedHeadSample, headSample, BASELINE_MAX_HEAD_DELTA)) {
             headSamples.push(headSample);
             lastAcceptedHeadSample = headSample;
+            poseQualityTotal += Number(headData.pose_quality || 0);
+
+            if (headSamples.length >= BASELINE_MIN_HEAD_SAMPLES) {
+              const spread = measureSampleSpread(headSamples, BASELINE_SAMPLE_KEYS);
+              if (
+                isSpreadConsistent(spread, BASELINE_MAX_HEAD_SPREAD) &&
+                headSamples.length >= BASELINE_TARGET_HEAD_SAMPLES
+              ) {
+                break;
+              }
+            }
           }
         }
       } catch {}
 
-      if (headSamples.length >= 4) {
-        break;
-      }
-
       await new Promise((resolve) => window.setTimeout(resolve, BASELINE_CAPTURE_PAUSE_MS));
     }
 
-    const headBaseline = headSamples.length >= 3
-      ? summarizeSamples(headSamples, [
-        "pitch",
-        "yaw",
-        "roll",
-        "nose_offset_x",
-        "nose_offset_y",
-      ])
+    const spread = measureSampleSpread(headSamples, BASELINE_SAMPLE_KEYS);
+    const consistencyPassed = (
+      headSamples.length >= BASELINE_MIN_HEAD_SAMPLES &&
+      isSpreadConsistent(spread, BASELINE_MAX_HEAD_SPREAD)
+    );
+    const headBaseline = consistencyPassed
+      ? summarizeSamples(headSamples, BASELINE_SAMPLE_KEYS)
       : null;
 
     return {
       head: headBaseline,
+      debug: {
+        acceptedSamples: headSamples.length,
+        attemptsUsed,
+        averagePoseQuality: headSamples.length > 0
+          ? Number((poseQualityTotal / headSamples.length).toFixed(3))
+          : 0,
+        spread: spread
+          ? Object.fromEntries(
+            Object.entries(spread).map(([key, value]) => [key, Number(value.toFixed(4))])
+          )
+          : null,
+        consistencyPassed,
+      },
     };
   }, [captureIdentityFrame, examId, session?._id]);
 
@@ -710,6 +783,7 @@ const ExamInterface = () => {
     setBaselineCalibrationInfo((prev) => ({
       status: prev.status === "ready" ? "ready" : "calibrating",
       missing: prev.status === "ready" ? [] : prev.missing,
+      debug: prev.status === "ready" ? prev.debug : null,
     }));
     baselineCalibrationRef.current = calibrateAttentionBaseline()
       .then((baseline) => {
@@ -722,16 +796,21 @@ const ExamInterface = () => {
         setBaselineCalibrationInfo({
           status: missing.length === 0 ? "ready" : "retrying",
           missing,
+          debug: baseline?.debug || null,
         });
-        return baseline;
+        return {
+          ...baseline,
+          ready: missing.length === 0,
+        };
       })
       .catch(() => {
         setHeadPoseBaseline(null);
         setBaselineCalibrationInfo({
           status: "retrying",
           missing: ["head"],
+          debug: null,
         });
-        return { head: null };
+        return { head: null, ready: false, debug: null };
       })
       .finally(() => {
         baselineCalibrationRef.current = null;
@@ -755,16 +834,18 @@ const ExamInterface = () => {
     });
 
     if (missing.length === 0) {
-      setBaselineCalibrationInfo({
+      setBaselineCalibrationInfo((prev) => ({
         status: "ready",
         missing: [],
-      });
+        debug: prev.debug,
+      }));
       return undefined;
     }
 
     setBaselineCalibrationInfo((prev) => ({
       status: prev.status === "calibrating" ? prev.status : "retrying",
       missing,
+      debug: prev.debug,
     }));
 
     baselineRetryTimeoutRef.current = window.setTimeout(() => {
@@ -855,6 +936,7 @@ const ExamInterface = () => {
       await exitFullscreenSafely();
     }
 
+    const verificationAlreadyReady = identityStatus === "verified";
     const microphoneReady = await prepareMicrophoneForExam();
     if (!microphoneReady) {
       return;
@@ -864,7 +946,7 @@ const ExamInterface = () => {
     let activeReference = referenceFace;
     let verificationResult = { status: "skipped", verificationImage: "" };
 
-    if (!hasReference) {
+    if (!verificationAlreadyReady && !hasReference) {
       const enrollment = await saveReferenceFace();
       hasReference = enrollment.saved;
       activeReference = enrollment.reference;
@@ -873,7 +955,7 @@ const ExamInterface = () => {
       }
     }
 
-    if (hasReference) {
+    if (!verificationAlreadyReady && hasReference) {
       verificationResult = await verifyCurrentFace(activeReference);
       if (verificationResult.status !== "verified" && verificationResult.status !== "skipped") {
         if (verificationResult.status === "mismatch") {
@@ -884,12 +966,29 @@ const ExamInterface = () => {
       }
     }
 
-    pendingVerificationImageRef.current = verificationResult.verificationImage || "";
-    void queueBaselineCalibration();
+    if (!verificationAlreadyReady) {
+      pendingVerificationImageRef.current = verificationResult.verificationImage || "";
+    }
 
-    setStartReady(true);
+    setIdentityBusy(true);
     setIdentityStatus("verified");
-    setIdentityMessage("Face verified. Click Begin Exam once more to enter fullscreen and start while calibration finishes in the background.");
+    setIdentityMessage("Face verified. Capturing a short head pose baseline before the exam starts...");
+
+    try {
+      const baselineResult = await queueBaselineCalibration();
+      if (!baselineResult?.ready) {
+        setStartReady(false);
+        setIdentityStatus("verified");
+        setIdentityMessage("Face verified, but head pose baseline needs cleaner centered samples. Stay still and click again.");
+        return;
+      }
+
+      setStartReady(true);
+      setIdentityStatus("verified");
+      setIdentityMessage("Face verified and head pose baseline is ready. Click once more to enter fullscreen and start the exam.");
+    } finally {
+      setIdentityBusy(false);
+    }
   };
 
   const initExam = async () => {
@@ -1097,14 +1196,31 @@ const ExamInterface = () => {
   const baselineMissingLabel = baselineCalibrationInfo.missing.length === 0
     ? ""
     : baselineCalibrationInfo.missing[0];
+  const baselineDebugSummary = baselineCalibrationInfo.debug
+    ? [
+      `${baselineCalibrationInfo.debug.acceptedSamples} samples`,
+      `avg quality ${Math.round(Number(baselineCalibrationInfo.debug.averagePoseQuality || 0) * 100)}%`,
+      baselineCalibrationInfo.debug.spread
+        ? `spread yaw ${Number(baselineCalibrationInfo.debug.spread.yaw || 0).toFixed(1)}, pitch ${Number(baselineCalibrationInfo.debug.spread.pitch || 0).toFixed(1)}`
+        : "",
+    ].filter(Boolean).join(", ")
+    : "";
 
   const baselineCalibrationMessage = baselineCalibrationInfo.status === "ready"
-    ? "Head pose baseline calibrated successfully and is now being used for tracking."
+    ? "Head pose baseline calibrated successfully and is now ready for exam tracking."
     : baselineCalibrationInfo.status === "calibrating"
-    ? "Capturing stable head pose samples for baseline calibration..."
+    ? "Capturing a few steady head pose samples while you stay centered..."
     : baselineCalibrationInfo.status === "retrying"
-    ? `Waiting for cleaner samples. Missing ${baselineMissingLabel} baseline; auto-retrying while you stay centered.`
-    : "Head pose baseline will calibrate automatically after verification.";
+    ? `Waiting for cleaner samples. Missing ${baselineMissingLabel} baseline; click again while you stay centered.`
+    : "Head pose baseline will calibrate right after face verification before the exam starts.";
+
+  const startActionLabel = identityBusy
+    ? "Working..."
+    : startReady
+    ? "Enter Fullscreen & Start"
+    : identityStatus === "verified"
+    ? "Finish Baseline"
+    : "Verify Face & Continue";
 
   const baselineValueSummary = headPoseBaseline
     ? `pitch ${Number(headPoseBaseline.pitch).toFixed(1)}, yaw ${Number(headPoseBaseline.yaw).toFixed(1)}, roll ${Number(headPoseBaseline.roll).toFixed(1)}, nose x ${Number(headPoseBaseline.nose_offset_x).toFixed(3)}, nose y ${Number(headPoseBaseline.nose_offset_y).toFixed(3)}`
@@ -1247,11 +1363,14 @@ const ExamInterface = () => {
                     ? "Retrying"
                     : "Pending"}
                 </span>
-              </div>
-              <p className="mt-1 leading-relaxed opacity-90">{baselineCalibrationMessage}</p>
-              {baselineValueSummary && (
-                <p className="mt-1 font-mono opacity-75">{baselineValueSummary}</p>
-              )}
+                </div>
+                <p className="mt-1 leading-relaxed opacity-90">{baselineCalibrationMessage}</p>
+                {baselineDebugSummary && (
+                  <p className="mt-1 opacity-75">{baselineDebugSummary}</p>
+                )}
+                {baselineValueSummary && (
+                  <p className="mt-1 font-mono opacity-75">{baselineValueSummary}</p>
+                )}
             </div>
             {!referenceFace && (
               <button
@@ -1277,11 +1396,7 @@ const ExamInterface = () => {
             {identityBusy
               ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               : <FiCheckCircle />}
-            {identityBusy
-              ? "Working..."
-              : startReady
-              ? "Enter Fullscreen & Start"
-              : "Verify Face & Continue"}
+            {startActionLabel}
           </motion.button>
         </motion.div>
       </div>
@@ -1450,10 +1565,31 @@ const ExamInterface = () => {
               enabled={examReady && !submitted}
               onAudioDetected={(analysis) => {
                 incrementAudioDetected();
-                const confidence = typeof analysis?.speech_confidence === "number"
-                  ? ` (${Math.round(analysis.speech_confidence * 100)}% confidence)`
+                const rawConfidence = typeof analysis?.raw_backend_speech_confidence === "number"
+                  ? Math.round(analysis.raw_backend_speech_confidence * 100)
+                  : null;
+                const smoothedConfidence = typeof analysis?.frontend_smoothed_confidence === "number"
+                  ? Math.round(analysis.frontend_smoothed_confidence * 100)
+                  : null;
+                const confidenceParts = [];
+
+                if (rawConfidence !== null) {
+                  confidenceParts.push(`raw ${rawConfidence}%`);
+                }
+
+                if (smoothedConfidence !== null) {
+                  confidenceParts.push(`smoothed ${smoothedConfidence}%`);
+                }
+
+                const confidenceSuffix = confidenceParts.length > 0
+                  ? ` (${confidenceParts.join(", ")})`
                   : "";
-                logProctorEvent("audio_detected", "medium", `Speech detected in background${confidence}`);
+
+                logProctorEvent(
+                  "audio_detected",
+                  "medium",
+                  `Speech detected in background${confidenceSuffix}`
+                );
               }}
             />
             <div className={`mt-3 rounded-xl border px-2.5 py-2 text-[11px] ${
@@ -1472,11 +1608,14 @@ const ExamInterface = () => {
                     ? "Retrying"
                     : "Pending"}
                 </span>
-              </div>
-              <p className="mt-1 leading-relaxed opacity-85">{baselineCalibrationMessage}</p>
-              {baselineValueSummary && (
-                <p className="mt-1 font-mono opacity-75">{baselineValueSummary}</p>
-              )}
+                </div>
+                <p className="mt-1 leading-relaxed opacity-85">{baselineCalibrationMessage}</p>
+                {baselineDebugSummary && (
+                  <p className="mt-1 opacity-75">{baselineDebugSummary}</p>
+                )}
+                {baselineValueSummary && (
+                  <p className="mt-1 font-mono opacity-75">{baselineValueSummary}</p>
+                )}
             </div>
             {mlFramePreview && (
               <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-2">

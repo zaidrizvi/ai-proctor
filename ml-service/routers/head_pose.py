@@ -28,23 +28,26 @@ ABS_YAW_THRESHOLD = 24
 ABS_PITCH_THRESHOLD = 17
 ABS_NOSE_OFFSET_THRESHOLD = 0.18
 ABS_ROLL_THRESHOLD = 24
-ABS_DOWNWARD_PITCH_THRESHOLD = 21
+ABS_DOWNWARD_PITCH_THRESHOLD = 24
 ABS_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.095
 
 DELTA_YAW_THRESHOLD = 12
 DELTA_PITCH_THRESHOLD = 16
 DELTA_NOSE_OFFSET_THRESHOLD = 0.16
 DELTA_ROLL_THRESHOLD = 20
-DELTA_DOWNWARD_PITCH_THRESHOLD = 13
-DELTA_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.07
+DELTA_DOWNWARD_PITCH_THRESHOLD = 14
+DELTA_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.08
 DELTA_YAW_DEADZONE = 4.0
 DELTA_PITCH_DEADZONE = 5.5
 DELTA_ROLL_DEADZONE = 5.0
 DELTA_NOSE_DEADZONE = 0.045
-POSE_SMOOTHING_ALPHA = 0.7
-LOW_QUALITY_POSE_SMOOTHING_ALPHA = 0.5
-STRONG_SIGNAL_POSE_SMOOTHING_ALPHA = 0.88
-TRACKER_STATE_TTL_SECONDS = 10.0
+POSE_SMOOTHING_ALPHA = 0.78
+LOW_QUALITY_POSE_SMOOTHING_ALPHA = 0.55
+HIGH_CHANGE_POSE_SMOOTHING_ALPHA = 0.86
+STRONG_SIGNAL_POSE_SMOOTHING_ALPHA = 0.92
+TRACKER_STATE_TTL_SECONDS = 4.5
+TRACKER_RESET_GAP_SECONDS = 1.8
+TRACKER_RESET_MOTION_SCORE = 1.28
 
 POSE_KEYS = (
     "pitch",
@@ -210,6 +213,7 @@ def _get_tracker_state(tracker_id: str | None):
                 "lock": Lock(),
                 "last_seen": now,
                 "last_timestamp_ms": 0,
+                "last_pose_seen_at": 0.0,
                 "pose": None,
                 "landmarker": _create_video_face_landmarker(),
             }
@@ -232,6 +236,17 @@ def _reset_tracker_pose(state: dict | None):
 
     with state["lock"]:
         state["pose"] = None
+        state["last_pose_seen_at"] = 0.0
+
+
+def _pose_motion_score(previous_pose: dict, pose: dict) -> float:
+    return max(
+        abs(pose["yaw"] - previous_pose["yaw"]) / 18.0,
+        abs(pose["pitch"] - previous_pose["pitch"]) / 16.0,
+        abs(pose["roll"] - previous_pose["roll"]) / 18.0,
+        abs(pose["nose_offset_x"] - previous_pose["nose_offset_x"]) / 0.1,
+        abs(pose["nose_offset_y"] - previous_pose["nose_offset_y"]) / 0.09,
+    )
 
 
 def _detect_landmarks(frame: np.ndarray, tracker_id: str | None):
@@ -255,14 +270,50 @@ def _detect_landmarks(frame: np.ndarray, tracker_id: str | None):
 
 def smooth_pose(pose: dict, tracker_state: dict | None):
     if tracker_state is None:
+        pose["smoothing_alpha"] = 1.0
+        pose["tracker_reused"] = False
+        pose["tracker_reset_reason"] = "stateless"
+        pose["tracker_frame_gap_ms"] = 0
+        pose["pose_motion_score"] = 0.0
         return pose
 
     with tracker_state["lock"]:
         previous_pose = tracker_state.get("pose")
-        tracker_state["last_seen"] = time.monotonic()
+        now = time.monotonic()
+        tracker_state["last_seen"] = now
+        frame_gap_ms = 0
+        reset_reason = "none"
 
         if previous_pose is None:
+            pose["smoothing_alpha"] = 1.0
+            pose["tracker_reused"] = False
+            pose["tracker_reset_reason"] = "cold_start"
+            pose["tracker_frame_gap_ms"] = 0
+            pose["pose_motion_score"] = 0.0
             tracker_state["pose"] = dict(pose)
+            tracker_state["last_pose_seen_at"] = now
+            return pose
+
+        last_pose_seen_at = float(tracker_state.get("last_pose_seen_at") or 0.0)
+        if last_pose_seen_at > 0.0:
+            frame_gap_ms = int(round((now - last_pose_seen_at) * 1000))
+
+        motion_score = _pose_motion_score(previous_pose, pose)
+        if last_pose_seen_at and (now - last_pose_seen_at) > TRACKER_RESET_GAP_SECONDS:
+            previous_pose = None
+            reset_reason = "frame_gap"
+        elif motion_score >= TRACKER_RESET_MOTION_SCORE:
+            previous_pose = None
+            reset_reason = "pose_jump"
+
+        if previous_pose is None:
+            pose["smoothing_alpha"] = 1.0
+            pose["tracker_reused"] = False
+            pose["tracker_reset_reason"] = reset_reason
+            pose["tracker_frame_gap_ms"] = frame_gap_ms
+            pose["pose_motion_score"] = round(motion_score, 4)
+            tracker_state["pose"] = dict(pose)
+            tracker_state["last_pose_seen_at"] = now
             return pose
 
         signal_strength = max(
@@ -273,6 +324,8 @@ def smooth_pose(pose: dict, tracker_state: dict | None):
         alpha = (
             STRONG_SIGNAL_POSE_SMOOTHING_ALPHA
             if signal_strength >= 1.0 and pose["pose_quality"] >= 0.42
+            else HIGH_CHANGE_POSE_SMOOTHING_ALPHA
+            if motion_score >= 0.72 and pose["pose_quality"] >= 0.45
             else POSE_SMOOTHING_ALPHA
             if pose["pose_quality"] >= 0.45
             else LOW_QUALITY_POSE_SMOOTHING_ALPHA
@@ -286,7 +339,13 @@ def smooth_pose(pose: dict, tracker_state: dict | None):
             (previous_pose["pose_quality"] * 0.35) + (pose["pose_quality"] * 0.65),
             4,
         )
+        smoothed["smoothing_alpha"] = round(alpha, 4)
+        smoothed["tracker_reused"] = True
+        smoothed["tracker_reset_reason"] = reset_reason
+        smoothed["tracker_frame_gap_ms"] = frame_gap_ms
+        smoothed["pose_motion_score"] = round(motion_score, 4)
         tracker_state["pose"] = dict(smoothed)
+        tracker_state["last_pose_seen_at"] = now
         return smoothed
 
 
@@ -384,18 +443,33 @@ def _downward_signal(
 ):
     pitch_score = max(0.0, pitch_value) / pitch_threshold
     nose_score = max(0.0, nose_y_value) / nose_threshold
-    signal = (
-        (pitch_score >= 1.0 and nose_score >= 0.7) or
-        (pitch_score >= 0.8 and nose_score >= 1.0) or
-        (pitch_score >= 1.2) or
-        (nose_score >= 1.3)
+    balanced_signal = (
+        (pitch_score >= 1.0 and nose_score >= 0.95) or
+        (pitch_score >= 0.9 and nose_score >= 1.05)
     )
-    return signal, round(max(pitch_score, nose_score), 4)
+    pitch_dominant_signal = pitch_score >= 1.45 and nose_score >= 0.7
+    nose_dominant_signal = nose_score >= 1.55 and pitch_score >= 0.55
+    signal = balanced_signal or pitch_dominant_signal or nose_dominant_signal
+    trigger_reason = (
+        "balanced"
+        if balanced_signal else
+        "pitch_dominant"
+        if pitch_dominant_signal else
+        "nose_dominant"
+        if nose_dominant_signal else
+        "none"
+    )
+    return signal, round(max(pitch_score, nose_score), 4), {
+        "pitch_score": round(pitch_score, 4),
+        "nose_score": round(nose_score, 4),
+        "trigger_reason": trigger_reason,
+    }
 
 
 def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
     deltas = build_pose_deltas(pose, baseline)
     turn_axis = "none"
+    threshold_path = "delta" if baseline is not None else "absolute"
 
     if baseline is None:
         metrics = {
@@ -403,7 +477,7 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
             "roll": abs(pose["roll"]) / ABS_ROLL_THRESHOLD,
             "nose_x": abs(pose["nose_offset_x"]) / ABS_NOSE_OFFSET_THRESHOLD,
         }
-        downward_signal, downward_score = _downward_signal(
+        downward_signal, downward_score, downward_debug = _downward_signal(
             pose["pitch"],
             pose["nose_offset_y"],
             ABS_DOWNWARD_PITCH_THRESHOLD,
@@ -449,7 +523,7 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
             "roll": abs(deltas["roll_delta"]) / DELTA_ROLL_THRESHOLD,
             "nose_x": abs(deltas["nose_offset_x_delta"]) / DELTA_NOSE_OFFSET_THRESHOLD,
         }
-        downward_signal, downward_score = _downward_signal(
+        downward_signal, downward_score, downward_debug = _downward_signal(
             deltas["pitch_delta"],
             deltas["nose_offset_y_delta"],
             DELTA_DOWNWARD_PITCH_THRESHOLD,
@@ -490,7 +564,31 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
         elif downward_signal:
             turn_axis = "downward"
 
-    return looking_away, obvious_turn, turn_axis, downward_signal, deltas, metrics, round(max(combined_score, downward_score), 4)
+    signal_reasons = []
+    if clear_yaw_turn:
+        signal_reasons.append("clear_yaw_turn")
+    if downward_signal:
+        signal_reasons.append(f"downward:{downward_debug['trigger_reason']}")
+    if lateral_signal and (strong_signal or multi_signal or combined_score >= 1.08):
+        signal_reasons.append("lateral_combined")
+
+    debug = {
+        "threshold_path_used": threshold_path,
+        "movement_reason": signal_reasons[0] if signal_reasons else "none",
+        "signal_reasons": signal_reasons,
+        "clear_yaw_turn": clear_yaw_turn,
+        "lateral_signal": lateral_signal,
+        "strong_signal": strong_signal,
+        "multi_signal": multi_signal,
+        "metrics": {key: round(value, 4) for key, value in metrics.items()},
+        "downward_pitch_score": downward_debug["pitch_score"],
+        "downward_nose_score": downward_debug["nose_score"],
+        "downward_trigger_reason": downward_debug["trigger_reason"],
+        "downward_score": downward_score,
+        "combined_score": round(combined_score, 4),
+    }
+
+    return looking_away, obvious_turn, turn_axis, downward_signal, deltas, metrics, round(max(combined_score, downward_score), 4), debug
 
 
 @router.post("/analyze")
@@ -518,7 +616,7 @@ async def analyze_head_pose(req: FrameRequest):
                 "baseline_applied": req.baseline is not None,
             }
 
-        looking_away, obvious_turn, turn_axis, downward_signal, deltas, metrics, combined_score = classify_looking_away(pose, req.baseline)
+        looking_away, obvious_turn, turn_axis, downward_signal, deltas, metrics, combined_score, debug = classify_looking_away(pose, req.baseline)
 
         return {
             "tracking_available": True,
@@ -538,6 +636,23 @@ async def analyze_head_pose(req: FrameRequest):
             "looking_away": looking_away,
             "event": "head_turned" if looking_away else None,
             "baseline_applied": req.baseline is not None,
+            "threshold_path_used": debug["threshold_path_used"],
+            "movement_reason": debug["movement_reason"],
+            "signal_reasons": debug["signal_reasons"],
+            "clear_yaw_turn": debug["clear_yaw_turn"],
+            "lateral_signal": debug["lateral_signal"],
+            "strong_signal": debug["strong_signal"],
+            "multi_signal": debug["multi_signal"],
+            "downward_pitch_score": debug["downward_pitch_score"],
+            "downward_nose_score": debug["downward_nose_score"],
+            "downward_trigger_reason": debug["downward_trigger_reason"],
+            "debug_metrics": debug["metrics"],
+            "debug_combined_score": debug["combined_score"],
+            "smoothing_alpha": pose.get("smoothing_alpha", 1.0),
+            "tracker_reused": pose.get("tracker_reused", False),
+            "tracker_reset_reason": pose.get("tracker_reset_reason", "none"),
+            "tracker_frame_gap_ms": pose.get("tracker_frame_gap_ms", 0),
+            "pose_motion_score": pose.get("pose_motion_score", 0.0),
         }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

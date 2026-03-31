@@ -13,14 +13,22 @@ from silero_vad import get_speech_timestamps, load_silero_vad
 TARGET_SAMPLE_RATE = 16000
 MIN_SUPPORTED_SAMPLE_RATE = 8000
 MIN_ANALYSIS_WINDOW_MS = 250
-MIN_VOLUME_LEVEL = 0.0035
-SILERO_THRESHOLD = float(os.getenv("SILERO_VAD_THRESHOLD", "0.5"))
-SILERO_NEG_THRESHOLD = float(os.getenv("SILERO_VAD_NEG_THRESHOLD", "0.35"))
-SILERO_MIN_SPEECH_MS = int(os.getenv("SILERO_MIN_SPEECH_MS", "250"))
+MIN_VOLUME_LEVEL = 0.0018
+SILERO_THRESHOLD = float(os.getenv("SILERO_VAD_THRESHOLD", "0.42"))
+SILERO_NEG_THRESHOLD = float(os.getenv("SILERO_VAD_NEG_THRESHOLD", "0.26"))
+SILERO_MIN_SPEECH_MS = int(os.getenv("SILERO_MIN_SPEECH_MS", "180"))
 SILERO_MIN_SILENCE_MS = int(os.getenv("SILERO_MIN_SILENCE_MS", "120"))
 SILERO_SPEECH_PAD_MS = int(os.getenv("SILERO_SPEECH_PAD_MS", "40"))
-MIN_SPEECH_RATIO = float(os.getenv("SILERO_MIN_SPEECH_RATIO", "0.08"))
-MIN_SPEECH_CONFIDENCE = float(os.getenv("SILERO_MIN_CONFIDENCE", "0.28"))
+MIN_SPEECH_RATIO = float(os.getenv("SILERO_MIN_SPEECH_RATIO", "0.045"))
+MIN_SPEECH_CONFIDENCE = float(os.getenv("SILERO_MIN_CONFIDENCE", "0.2"))
+CONFIDENCE_DURATION_REFERENCE_MS = 900
+CONFIDENCE_RUN_REFERENCE_MS = 650
+CONFIDENCE_SPEECH_RATIO_REFERENCE = 0.32
+CONFIDENCE_VAD_RATIO_REFERENCE = 0.22
+CONFIDENCE_MEAN_PROBABILITY_REFERENCE = 0.48
+CONFIDENCE_ACTIVE_PROBABILITY_REFERENCE = 0.72
+CONFIDENCE_PEAK_PROBABILITY_REFERENCE = 0.92
+CONFIDENCE_VOLUME_REFERENCE = 0.02
 _VAD_MODEL_LOCK = threading.Lock()
 
 
@@ -80,6 +88,8 @@ def analyze_audio_chunk(samples: np.ndarray, sample_rate: int) -> dict:
             "analysis_window_ms": analysis_window_ms,
             "resampled_sample_rate": TARGET_SAMPLE_RATE,
             "vad_model": "silero_vad",
+            "volume_gate_passed": False,
+            "volume_gate_threshold": round(MIN_VOLUME_LEVEL, 4),
         }
 
     resampled_samples = _resample_audio(clipped_samples, sample_rate, TARGET_SAMPLE_RATE)
@@ -105,15 +115,29 @@ def analyze_audio_chunk(samples: np.ndarray, sample_rate: int) -> dict:
         speech_duration_samples / max(int(audio_tensor.numel()), 1)
     )
 
-    speech_confidence = clamp(
-        (min(mean_active_probability / 0.82, 1.0) * 0.45) +
-        (min(peak_probability / 0.9, 1.0) * 0.25) +
-        (min(speech_ratio / 0.35, 1.0) * 0.2) +
-        (min(longest_segment_ms / 650.0, 1.0) * 0.1),
-        0.0,
-        1.0,
+    speech_confidence, confidence_breakdown = _compute_speech_confidence(
+        rms=rms,
+        analysis_window_ms=analysis_window_ms,
+        speech_duration_ms=speech_duration_ms,
+        longest_segment_ms=longest_segment_ms,
+        speech_ratio=speech_ratio,
+        probability_ratio=probability_ratio,
+        mean_probability=mean_probability,
+        mean_active_probability=mean_active_probability,
+        peak_probability=peak_probability,
     )
-    speech_detected = bool(timestamps) and speech_ratio >= MIN_SPEECH_RATIO and speech_confidence >= MIN_SPEECH_CONFIDENCE
+    speech_detected = (
+        bool(timestamps) and
+        speech_ratio >= MIN_SPEECH_RATIO and
+        (
+            speech_confidence >= MIN_SPEECH_CONFIDENCE or
+            (
+                probability_ratio >= 0.18 and
+                speech_duration_ms >= 220 and
+                mean_probability >= 0.34
+            )
+        )
+    )
 
     return {
         "speech_detected": speech_detected,
@@ -126,10 +150,14 @@ def analyze_audio_chunk(samples: np.ndarray, sample_rate: int) -> dict:
         "speech_run_ms": longest_segment_ms,
         "vad_run_ms": longest_segment_ms,
         "speech_probability_mean": round(mean_probability, 4),
+        "speech_probability_active_mean": round(mean_active_probability, 4),
         "speech_probability_peak": round(peak_probability, 4),
         "resampled_sample_rate": TARGET_SAMPLE_RATE,
         "vad_model": "silero_vad",
         "vad_threshold": round(SILERO_THRESHOLD, 3),
+        "volume_gate_passed": True,
+        "volume_gate_threshold": round(MIN_VOLUME_LEVEL, 4),
+        "confidence_breakdown": confidence_breakdown,
     }
 
 
@@ -145,15 +173,97 @@ def _empty_audio_analysis() -> dict:
         "speech_run_ms": 0,
         "vad_run_ms": 0,
         "speech_probability_mean": 0.0,
+        "speech_probability_active_mean": 0.0,
         "speech_probability_peak": 0.0,
         "resampled_sample_rate": TARGET_SAMPLE_RATE,
         "vad_model": "silero_vad",
         "vad_threshold": round(SILERO_THRESHOLD, 3),
+        "volume_gate_passed": False,
+        "volume_gate_threshold": round(MIN_VOLUME_LEVEL, 4),
+        "confidence_breakdown": {
+            "coverage_score": 0.0,
+            "vad_coverage_score": 0.0,
+            "duration_score": 0.0,
+            "run_score": 0.0,
+            "mean_probability_score": 0.0,
+            "active_probability_score": 0.0,
+            "peak_score": 0.0,
+            "volume_factor": 0.0,
+        },
     }
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return min(maximum, max(minimum, value))
+
+
+def _compute_speech_confidence(
+    *,
+    rms: float,
+    analysis_window_ms: int,
+    speech_duration_ms: int,
+    longest_segment_ms: int,
+    speech_ratio: float,
+    probability_ratio: float,
+    mean_probability: float,
+    mean_active_probability: float,
+    peak_probability: float,
+) -> tuple[float, dict]:
+    duration_reference_ms = max(
+        min(int(round(analysis_window_ms * 0.7)), CONFIDENCE_DURATION_REFERENCE_MS),
+        320,
+    )
+    run_reference_ms = max(
+        min(int(round(analysis_window_ms * 0.55)), CONFIDENCE_RUN_REFERENCE_MS),
+        250,
+    )
+    coverage_score = clamp(speech_ratio / CONFIDENCE_SPEECH_RATIO_REFERENCE, 0.0, 1.0)
+    vad_coverage_score = clamp(probability_ratio / CONFIDENCE_VAD_RATIO_REFERENCE, 0.0, 1.0)
+    duration_score = clamp(speech_duration_ms / duration_reference_ms, 0.0, 1.0)
+    run_score = clamp(longest_segment_ms / run_reference_ms, 0.0, 1.0)
+    mean_probability_score = clamp(mean_probability / CONFIDENCE_MEAN_PROBABILITY_REFERENCE, 0.0, 1.0)
+    active_probability_score = clamp(
+        mean_active_probability / CONFIDENCE_ACTIVE_PROBABILITY_REFERENCE,
+        0.0,
+        1.0,
+    )
+    peak_score = clamp(
+        (peak_probability - SILERO_THRESHOLD) /
+        max(CONFIDENCE_PEAK_PROBABILITY_REFERENCE - SILERO_THRESHOLD, 1e-6),
+        0.0,
+        1.0,
+    )
+    volume_factor = clamp(
+        (rms - MIN_VOLUME_LEVEL) / max(CONFIDENCE_VOLUME_REFERENCE - MIN_VOLUME_LEVEL, 1e-6),
+        0.0,
+        1.0,
+    )
+
+    base_confidence = (
+        (coverage_score * 0.29) +
+        (vad_coverage_score * 0.26) +
+        (duration_score * 0.19) +
+        (run_score * 0.14) +
+        (mean_probability_score * 0.07) +
+        (active_probability_score * 0.03) +
+        (peak_score * 0.02)
+    )
+    speech_confidence = clamp(
+        base_confidence * (0.72 + (volume_factor * 0.28)),
+        0.0,
+        1.0,
+    )
+
+    return speech_confidence, {
+        "coverage_score": round(coverage_score, 4),
+        "vad_coverage_score": round(vad_coverage_score, 4),
+        "duration_score": round(duration_score, 4),
+        "run_score": round(run_score, 4),
+        "mean_probability_score": round(mean_probability_score, 4),
+        "active_probability_score": round(active_probability_score, 4),
+        "peak_score": round(peak_score, 4),
+        "volume_factor": round(volume_factor, 4),
+    }
 
 
 @lru_cache(maxsize=1)

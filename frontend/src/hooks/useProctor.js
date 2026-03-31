@@ -7,20 +7,32 @@ const FACE_RECOVERY_STREAK = 2;
 const MULTIPLE_FACES_STREAK_TO_ALERT = 2;
 const HEAD_TURN_STREAK_TO_ALERT = 2;
 const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
+const HEAD_TURN_RECOVERY_STREAK = 2;
 const GAZE_AWAY_STREAK_TO_ALERT = 2;
 const NO_FRAME_STREAK_TO_ALERT = 2;
 const FACE_MISMATCH_STREAK_TO_ALERT = 2;
+const FACE_MATCH_RECOVERY_STREAK = 2;
 const HEAD_TURN_ALERT_COOLDOWN_MS = 2000;
 const OBJECT_DETECTED_STREAK_TO_ALERT = 2;
 const OBJECT_ALERT_COOLDOWN_MS = 2000;
-const OBJECT_ANALYSIS_INTERVAL_MS = 2000;
+const OBJECT_ANALYSIS_INTERVAL_MS = 1500;
 const MULTIPLE_FACES_ALERT_COOLDOWN_MS = 2000;
+const MULTIPLE_FACES_FACE_SOURCE_HOLD_MS = 1400;
+const MULTIPLE_FACES_OBJECT_SOURCE_HOLD_MS = (OBJECT_ANALYSIS_INTERVAL_MS * 2) + 400;
+const MULTIPLE_FACES_FACE_PULSE_INTERVAL_MS = 700;
+const MULTIPLE_FACES_OBJECT_PULSE_INTERVAL_MS = 1400;
+const MULTIPLE_FACES_STALE_DECAY_MS = 2200;
 const FACE_MISMATCH_ALERT_COOLDOWN_MS = 2000;
 const MIN_HEAD_POSE_QUALITY_FOR_ALERT = 0.46;
 const MIN_FACE_CONFIDENCE_FOR_STABLE_ALERTS = 0.54;
 const MIN_FACE_AREA_RATIO_FOR_STABLE_ALERTS = 0.024;
 const MIN_FACE_AREA_RATIO_FOR_FALLBACK = 0.02;
 const MIN_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.02;
+const MIN_DOWNWARD_HEAD_PITCH_SCORE_FOR_ALERT = 1.28;
+const MIN_DOWNWARD_HEAD_NOSE_SCORE_FOR_ALERT = 1.18;
+const MIN_DOWNWARD_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.16;
+const IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS = 2000;
+const IDENTITY_MATCH_FRESHNESS_MS = 4500;
 const MAX_CAPTURE_WIDTH = 1024;
 const JPEG_QUALITY = 0.9;
 
@@ -48,16 +60,25 @@ const useProctor = ({
   const lastObjectCheckAtRef = useRef(0);
   const lifecycleTokenRef = useRef(0);
   const analysisCycleRef = useRef(0);
-  const countedMultipleFacesCyclesRef = useRef(new Set());
-  const multipleFacesCycleBySourceRef = useRef({
-    face: 0,
-    object: 0,
+  const lastMultipleFacesDecayAtRef = useRef(0);
+  const identityStateRef = useRef({
+    lastVerifiedMatchAt: 0,
+    lastMismatchAt: 0,
+    lastCheckAt: 0,
+    status: "unknown",
+    reason: "",
+  });
+  const multipleFacesSourcesRef = useRef({
+    face: {
+      lastPositiveAt: 0,
+      lastPulseAt: 0,
+    },
+    object: {
+      lastPositiveAt: 0,
+      lastPulseAt: 0,
+    },
   });
   const noFrameStreakRef = useRef(0);
-  const multipleFacesSourcesRef = useRef({
-    face: false,
-    object: false,
-  });
   const activeFlagsRef = useRef({
     faceMissing: false,
     multipleFaces: false,
@@ -79,9 +100,11 @@ const useProctor = ({
     facePresent: 0,
     multipleFaces: 0,
     headTurned: 0,
+    headTurnRecovery: 0,
     gazeAway: 0,
     objectDetected: 0,
     faceMismatch: 0,
+    faceVerified: 0,
   });
   const countersRef = useRef({
     face_not_detected: 0,
@@ -113,44 +136,92 @@ const useProctor = ({
     streaksRef.current[key] = Math.max(0, streaksRef.current[key] - amount);
   }, []);
 
-  const triggerMultipleFacesAlert = useCallback((source, description, now, cycleId, token) => {
-    multipleFacesSourcesRef.current[source] = true;
-    const sourceCycle = multipleFacesCycleBySourceRef.current[source];
+  const hasReferenceIdentity = Boolean(referenceFace) || referenceFaceEmbedding.length > 0;
 
-    if (
-      sourceCycle !== cycleId &&
-      !countedMultipleFacesCyclesRef.current.has(cycleId)
-    ) {
-      streaksRef.current.multipleFaces += 1;
-      countedMultipleFacesCyclesRef.current.add(cycleId);
-      if (countedMultipleFacesCyclesRef.current.size > 12) {
-        const oldestCycleId = countedMultipleFacesCyclesRef.current.values().next().value;
-        countedMultipleFacesCyclesRef.current.delete(oldestCycleId);
-      }
+  const hasFreshVerifiedIdentity = useCallback((now) => {
+    if (!hasReferenceIdentity) {
+      return false;
     }
-    multipleFacesCycleBySourceRef.current[source] = cycleId;
+
+    return now - identityStateRef.current.lastVerifiedMatchAt <= IDENTITY_MATCH_FRESHNESS_MS;
+  }, [hasReferenceIdentity]);
+
+  const hasRecentIdentityMismatch = useCallback((now) => {
+    if (!hasReferenceIdentity) {
+      return false;
+    }
+
+    return now - identityStateRef.current.lastMismatchAt <= IDENTITY_MATCH_FRESHNESS_MS;
+  }, [hasReferenceIdentity]);
+
+  const getMultipleFacesSourceHoldMs = useCallback((source) => {
+    return source === "object"
+      ? MULTIPLE_FACES_OBJECT_SOURCE_HOLD_MS
+      : MULTIPLE_FACES_FACE_SOURCE_HOLD_MS;
+  }, []);
+
+  const getMultipleFacesSourcePulseIntervalMs = useCallback((source) => {
+    return source === "object"
+      ? MULTIPLE_FACES_OBJECT_PULSE_INTERVAL_MS
+      : MULTIPLE_FACES_FACE_PULSE_INTERVAL_MS;
+  }, []);
+
+  const hasFreshMultipleFacesSignal = useCallback((now) => {
+    return Object.entries(multipleFacesSourcesRef.current).some(([source, state]) => {
+      return now - state.lastPositiveAt <= getMultipleFacesSourceHoldMs(source);
+    });
+  }, [getMultipleFacesSourceHoldMs]);
+
+  const refreshMultipleFacesState = useCallback((now) => {
+    const hasFreshSignal = hasFreshMultipleFacesSignal(now);
+
+    if (hasFreshSignal) {
+      activeFlagsRef.current.multipleFaces = true;
+      return true;
+    }
+
+    activeFlagsRef.current.multipleFaces = false;
+
+    if (now - lastMultipleFacesDecayAtRef.current >= MULTIPLE_FACES_STALE_DECAY_MS) {
+      decayStreak("multipleFaces");
+      lastMultipleFacesDecayAtRef.current = now;
+    }
+
+    return false;
+  }, [decayStreak, hasFreshMultipleFacesSignal]);
+
+  const triggerMultipleFacesAlert = useCallback((source, description, now, token) => {
+    const sourceState = multipleFacesSourcesRef.current[source];
+    const pulseIntervalMs = getMultipleFacesSourcePulseIntervalMs(source);
+    const isNewPulse = now - sourceState.lastPulseAt >= pulseIntervalMs;
+
+    sourceState.lastPositiveAt = now;
+
+    if (isNewPulse) {
+      sourceState.lastPulseAt = now;
+      streaksRef.current.multipleFaces = Math.min(
+        streaksRef.current.multipleFaces + 1,
+        MULTIPLE_FACES_STREAK_TO_ALERT + 2
+      );
+    }
+
+    activeFlagsRef.current.multipleFaces = true;
 
     if (
       streaksRef.current.multipleFaces >= MULTIPLE_FACES_STREAK_TO_ALERT &&
-      !activeFlagsRef.current.multipleFaces &&
       now - lastAlertAtRef.current.multipleFaces >= MULTIPLE_FACES_ALERT_COOLDOWN_MS
     ) {
-      activeFlagsRef.current.multipleFaces = true;
       lastAlertAtRef.current.multipleFaces = now;
       countersRef.current.multiple_faces += 1;
       emitAlert(token, "multiple_faces", "high", description);
     }
-  }, [emitAlert]);
+  }, [emitAlert, getMultipleFacesSourcePulseIntervalMs]);
 
-  const clearMultipleFacesSignal = useCallback((source) => {
-    multipleFacesSourcesRef.current[source] = false;
-    const hasAnyActiveSource = Object.values(multipleFacesSourcesRef.current).some(Boolean);
-
-    if (!hasAnyActiveSource) {
-      streaksRef.current.multipleFaces = 0;
-      activeFlagsRef.current.multipleFaces = false;
-    }
-  }, []);
+  const clearMultipleFacesSignal = useCallback((source, now) => {
+    const sourceState = multipleFacesSourcesRef.current[source];
+    sourceState.lastPulseAt = 0;
+    refreshMultipleFacesState(now);
+  }, [refreshMultipleFacesState]);
 
   const captureFrame = useCallback(async () => {
     const drawToDataUrl = (source, sourceWidth, sourceHeight) => {
@@ -194,7 +265,7 @@ const useProctor = ({
     );
   }, [streamRef, videoRef]);
 
-  const processFaceResult = useCallback((faceResult, now, trackerPresence, cycleId, token) => {
+  const processFaceResult = useCallback((faceResult, now, trackerPresence, token) => {
     let faceDetectorAvailable = false;
     let detectorNoFace = false;
     let primaryFaceRecovered = false;
@@ -221,10 +292,18 @@ const useProctor = ({
       );
     }
 
+    const trackerFallbackAllowed = (
+      !hasReferenceIdentity ||
+      (
+        hasFreshVerifiedIdentity(now) &&
+        !hasRecentIdentityMismatch(now)
+      )
+    );
     const fallbackFacePresent = Boolean(
       (detectorNoFace || !faceDetectorAvailable) &&
       trackerPresence?.facePresent &&
-      trackerPresence?.stable
+      trackerPresence?.stable &&
+      trackerFallbackAllowed
     );
     const noFace = faceDetectorAvailable && detectorNoFace && !fallbackFacePresent;
     const faceRecovered = (
@@ -232,8 +311,15 @@ const useProctor = ({
       fallbackFacePresent
     );
     const stableFace = faceRecovered && !weakFace && !trackerPresence?.weak;
+    const identityMismatchVisible = Boolean(
+      hasReferenceIdentity &&
+      !faceMultipleFacesCandidate &&
+      (faceRecovered || trackerPresence?.facePresent) &&
+      hasRecentIdentityMismatch(now)
+    );
+    const shouldTreatAsNoFace = noFace && !identityMismatchVisible;
 
-    if (noFace) {
+    if (shouldTreatAsNoFace) {
       streaksRef.current.noFace += 1;
       streaksRef.current.facePresent = 0;
     } else if (stableFace) {
@@ -260,31 +346,50 @@ const useProctor = ({
     }
 
     if (faceMultipleFacesCandidate) {
-      triggerMultipleFacesAlert("face", "Multiple faces detected", now, cycleId, token);
+      triggerMultipleFacesAlert("face", "Multiple faces detected", now, token);
     } else {
-      clearMultipleFacesSignal("face");
+      clearMultipleFacesSignal("face", now);
     }
 
     return {
       faceDetectorAvailable,
       faceDetected: stableFace,
       facePresent: faceRecovered,
-      noFace,
+      noFace: shouldTreatAsNoFace,
       weakFace: Boolean(weakFace || trackerPresence?.weak),
       fallbackFacePresent,
+      identityMismatchVisible,
       faceConfidence,
       faceAreaRatio,
       multipleFaces: faceMultipleFacesCandidate,
     };
-  }, [clearMultipleFacesSignal, decayStreak, emitAlert, triggerMultipleFacesAlert]);
+  }, [
+    clearMultipleFacesSignal,
+    decayStreak,
+    emitAlert,
+    hasFreshVerifiedIdentity,
+    hasRecentIdentityMismatch,
+    hasReferenceIdentity,
+    triggerMultipleFacesAlert,
+  ]);
 
   const processHeadResult = useCallback((headResult, gazeResult, now, faceState = {}, token) => {
     const shouldSuppressHeadTurn =
       suppressHeadTurnAlerts ||
       faceState.noFace ||
-      faceState.weakFace;
+      faceState.identityMismatchVisible;
+
+    const recoverHeadTurnSignal = (clearImmediately = false) => {
+      decayStreak("headTurned");
+      streaksRef.current.headTurnRecovery += 1;
+
+      if (clearImmediately || streaksRef.current.headTurnRecovery >= HEAD_TURN_RECOVERY_STREAK) {
+        activeFlagsRef.current.headTurned = false;
+      }
+    };
 
     if (shouldSuppressHeadTurn) {
+      streaksRef.current.headTurnRecovery = 0;
       decayStreak("headTurned");
       activeFlagsRef.current.headTurned = false;
       return;
@@ -303,6 +408,9 @@ const useProctor = ({
     const poseQuality = Number(head.pose_quality || 0);
     const movementScore = Number(head.combined_movement_score || head.movement_score || 0);
     const turnAxis = head.turn_axis || "none";
+    const downwardPitchScore = Number(head.downward_pitch_score || 0);
+    const downwardNoseScore = Number(head.downward_nose_score || 0);
+    const movementReason = String(head.movement_reason || "none");
     const headTurned = rawHeadTurned && !(
       turnAxis === "downward" &&
       !gazeCurrentlyAway &&
@@ -310,15 +418,29 @@ const useProctor = ({
     );
 
     if (poseQuality < MIN_HEAD_POSE_QUALITY_FOR_ALERT) {
-      decayStreak("headTurned");
-      activeFlagsRef.current.headTurned = false;
+      recoverHeadTurnSignal();
       return;
     }
 
-    if (headTurned && movementScore >= MIN_HEAD_MOVEMENT_SCORE_FOR_ALERT) {
+    const borderlineDownwardTurn = (
+      headTurned &&
+      turnAxis === "downward" &&
+      !gazeCurrentlyAway &&
+      movementReason.startsWith("downward") &&
+      downwardPitchScore < MIN_DOWNWARD_HEAD_PITCH_SCORE_FOR_ALERT &&
+      downwardNoseScore < MIN_DOWNWARD_HEAD_NOSE_SCORE_FOR_ALERT &&
+      movementScore < MIN_DOWNWARD_HEAD_MOVEMENT_SCORE_FOR_ALERT
+    );
+
+    if (
+      headTurned &&
+      movementScore >= MIN_HEAD_MOVEMENT_SCORE_FOR_ALERT &&
+      !borderlineDownwardTurn
+    ) {
       streaksRef.current.headTurned += 1;
+      streaksRef.current.headTurnRecovery = 0;
     } else {
-      decayStreak("headTurned");
+      recoverHeadTurnSignal();
     }
 
     const headTurnThreshold = obviousTurn
@@ -334,8 +456,6 @@ const useProctor = ({
       lastAlertAtRef.current.headTurned = now;
       countersRef.current.head_turned += 1;
       emitAlert(token, "head_turned", "medium", "Student turned head away from screen");
-    } else if (!headTurned) {
-      activeFlagsRef.current.headTurned = false;
     }
   }, [decayStreak, emitAlert, suppressHeadTurnAlerts]);
 
@@ -343,7 +463,7 @@ const useProctor = ({
     let gazeLookingAway = false;
     let gazeDirection = "side";
 
-    if (faceState.noFace || faceState.weakFace) {
+    if (faceState.noFace || faceState.weakFace || faceState.identityMismatchVisible) {
       decayStreak("gazeAway");
       activeFlagsRef.current.gazeAway = false;
       return;
@@ -383,15 +503,18 @@ const useProctor = ({
     }
   }, [decayStreak, emitAlert]);
 
-  const processObjectResult = useCallback((response, cycleId, token) => {
+  const processObjectResult = useCallback((response, token) => {
     if (!isTokenActive(token)) {
       return;
     }
 
     const now = Date.now();
     const objects = response.data;
-    const hasExtraPerson = objects.suspicious_objects?.some(
-      (obj) => obj.object === "extra person detected"
+    const hasExtraPerson = Boolean(
+      objects.extra_person_detected?.detected ||
+      Number(objects.extra_person_detected?.counted_person_count || 0) > 1 ||
+      Number(objects.person_count || 0) > 1 ||
+      objects.suspicious_objects?.some((obj) => obj.object === "extra person detected")
     );
     const nonPersonSuspicious = (objects.suspicious_objects || []).filter(
       (obj) => obj.object !== "extra person detected"
@@ -425,9 +548,9 @@ const useProctor = ({
     }
 
     if (hasExtraPerson) {
-      triggerMultipleFacesAlert("object", "Multiple people detected in camera view", now, cycleId, token);
+      triggerMultipleFacesAlert("object", "Multiple people detected in camera view", now, token);
     } else {
-      clearMultipleFacesSignal("object");
+      clearMultipleFacesSignal("object", now);
     }
   }, [clearMultipleFacesSignal, emitAlert, isTokenActive, triggerMultipleFacesAlert]);
 
@@ -438,15 +561,30 @@ const useProctor = ({
 
     const now = Date.now();
     const verification = response.data;
+    identityStateRef.current.lastCheckAt = now;
+    identityStateRef.current.reason = verification.reason || "";
     const mismatchDetected =
       verification.verification_checked &&
       verification.verification_reliable !== false &&
       verification.event === "face_mismatch";
+    const verifiedMatch =
+      verification.verification_checked &&
+      verification.verification_reliable !== false &&
+      verification.verified === true;
 
     if (mismatchDetected) {
       streaksRef.current.faceMismatch += 1;
-    } else {
+      streaksRef.current.faceVerified = 0;
+      identityStateRef.current.lastMismatchAt = now;
+      identityStateRef.current.status = "mismatch";
+    } else if (verifiedMatch) {
+      streaksRef.current.faceVerified += 1;
       streaksRef.current.faceMismatch = 0;
+      identityStateRef.current.lastVerifiedMatchAt = now;
+      identityStateRef.current.status = "match";
+    } else {
+      decayStreak("faceMismatch");
+      identityStateRef.current.status = verification.reason || "uncertain";
     }
 
     if (
@@ -460,12 +598,14 @@ const useProctor = ({
         token,
         "face_mismatch",
         "high",
-        `Face mismatch detected (${Math.round(verification.distance * 100) / 100} distance)`
+        `Visible face does not match enrolled student (${Math.round(verification.distance * 100) / 100} distance)`
       );
+    } else if (streaksRef.current.faceVerified >= FACE_MATCH_RECOVERY_STREAK) {
+      streaksRef.current.faceMismatch = 0;
     }
-  }, [emitAlert, isTokenActive]);
+  }, [decayStreak, emitAlert, isTokenActive]);
 
-  const scheduleBackgroundTasks = useCallback((frame, cycleId, token) => {
+  const scheduleBackgroundTasks = useCallback((frame, token, faceState = {}, trackerPresence = {}) => {
     const now = Date.now();
     if (
       !objectAnalysisInFlightRef.current &&
@@ -476,7 +616,7 @@ const useProctor = ({
 
       void axios.post(`${ML_URL}/objects/detect`, { frame })
         .then((response) => {
-          processObjectResult(response, cycleId, token);
+          processObjectResult(response, token);
         })
         .catch((error) => {
           if (isTokenActive(token)) {
@@ -490,10 +630,23 @@ const useProctor = ({
         });
     }
 
+    const effectiveVerifyIntervalMs = Math.min(
+      verifyIntervalMs,
+      IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS
+    );
+    const shouldAttemptIdentityCheck = (
+      hasReferenceIdentity &&
+      !faceState.multipleFaces &&
+      (
+        faceState.facePresent ||
+        faceState.fallbackFacePresent ||
+        trackerPresence?.facePresent
+      )
+    );
     const shouldVerifyIdentity =
-      Boolean(referenceFace) &&
+      shouldAttemptIdentityCheck &&
       !verifyAnalysisInFlightRef.current &&
-      Date.now() - lastIdentityCheckRef.current >= verifyIntervalMs;
+      Date.now() - lastIdentityCheckRef.current >= effectiveVerifyIntervalMs;
 
     if (!shouldVerifyIdentity) {
       return;
@@ -521,6 +674,7 @@ const useProctor = ({
         }
       });
   }, [
+    hasReferenceIdentity,
     isTokenActive,
     processObjectResult,
     processVerifyResult,
@@ -595,7 +749,6 @@ const useProctor = ({
       activeFlagsRef.current.cameraFrameUnavailable = false;
       onMlFrame?.(frame);
       analysisCycleRef.current += 1;
-      const cycleId = analysisCycleRef.current;
 
       const criticalRequests = [
         { key: "face", promise: axios.post(`${ML_URL}/face/detect`, { frame }) },
@@ -656,11 +809,12 @@ const useProctor = ({
       }
 
       countersRef.current.total_checks += 1;
+      refreshMultipleFacesState(now);
       const trackerPresence = deriveTrackerFacePresence(headRes, gazeRes);
-      const faceState = processFaceResult(faceRes, now, trackerPresence, cycleId, token);
-       processHeadResult(headRes, gazeRes, now, faceState, token);
+      const faceState = processFaceResult(faceRes, now, trackerPresence, token);
+      processHeadResult(headRes, gazeRes, now, faceState, token);
       processGazeResult(gazeRes, faceState, token);
-      scheduleBackgroundTasks(frame, cycleId, token);
+      scheduleBackgroundTasks(frame, token, faceState, trackerPresence);
     } catch (err) {
       if (isTokenActive(token)) {
         console.warn("ML analysis failed:", err.message);
@@ -688,6 +842,7 @@ const useProctor = ({
     processFaceResult,
     processHeadResult,
     processGazeResult,
+    refreshMultipleFacesState,
     scheduleBackgroundTasks,
   ]);
 
@@ -718,6 +873,13 @@ const useProctor = ({
   useEffect(() => {
     if (!enabled || !sessionId) return;
     lifecycleTokenRef.current += 1;
+    identityStateRef.current = {
+      lastVerifiedMatchAt: hasReferenceIdentity ? Date.now() : 0,
+      lastMismatchAt: 0,
+      lastCheckAt: 0,
+      status: hasReferenceIdentity ? "startup_grace" : "unknown",
+      reason: "",
+    };
 
     void analyzeFrame();
     intervalRef.current = setInterval(analyzeFrame, intervalMs);
@@ -732,16 +894,25 @@ const useProctor = ({
       lastObjectCheckAtRef.current = 0;
       lastIdentityCheckRef.current = 0;
       analysisCycleRef.current = 0;
+      lastMultipleFacesDecayAtRef.current = 0;
+      identityStateRef.current = {
+        lastVerifiedMatchAt: 0,
+        lastMismatchAt: 0,
+        lastCheckAt: 0,
+        status: "unknown",
+        reason: "",
+      };
       noFrameStreakRef.current = 0;
       multipleFacesSourcesRef.current = {
-        face: false,
-        object: false,
+        face: {
+          lastPositiveAt: 0,
+          lastPulseAt: 0,
+        },
+        object: {
+          lastPositiveAt: 0,
+          lastPulseAt: 0,
+        },
       };
-      multipleFacesCycleBySourceRef.current = {
-        face: 0,
-        object: 0,
-      };
-      countedMultipleFacesCyclesRef.current = new Set();
       activeFlagsRef.current = {
         faceMissing: false,
         multipleFaces: false,
@@ -755,12 +926,14 @@ const useProctor = ({
         facePresent: 0,
         multipleFaces: 0,
         headTurned: 0,
+        headTurnRecovery: 0,
         gazeAway: 0,
         objectDetected: 0,
         faceMismatch: 0,
+        faceVerified: 0,
       };
     };
-  }, [enabled, sessionId, analyzeFrame, intervalMs]);
+  }, [enabled, sessionId, analyzeFrame, hasReferenceIdentity, intervalMs]);
 
   return {
     incrementTabSwitch,

@@ -23,9 +23,12 @@ def get_model():
         model = YOLO(model_path)
     return model
 
-DETECTION_CONFIDENCE = 0.32
+DETECTION_CONFIDENCE = 0.24
 MIN_BOX_AREA_RATIO = 0.008
-MIN_PERSON_BOX_AREA_RATIO = 0.05
+MIN_PRIMARY_PERSON_BOX_AREA_RATIO = 0.04
+MIN_SECONDARY_PERSON_BOX_AREA_RATIO = 0.015
+MIN_PRIMARY_PERSON_CONFIDENCE = 0.35
+MIN_SECONDARY_PERSON_CONFIDENCE = 0.24
 
 SUSPICIOUS_OBJECTS = {
     "cell phone": {"severity": "high", "min_confidence": 0.62, "min_area_ratio": 0.006},
@@ -40,6 +43,107 @@ def _resolve_suspicious_severity(class_name: str, confidence: float, default: st
         return "medium"
     return default
 
+
+def _round_detection_item(item: dict) -> dict:
+    return {
+        **item,
+        "confidence": round(float(item["confidence"]), 2),
+        "area_ratio": round(float(item["area_ratio"]), 4),
+    }
+
+
+def _build_bbox(x1: float, y1: float, x2: float, y2: float) -> dict:
+    return {
+        "x1": round(float(x1), 1),
+        "y1": round(float(y1), 1),
+        "x2": round(float(x2), 1),
+        "y2": round(float(y2), 1),
+    }
+
+
+def _build_detection_item(
+    *,
+    class_name: str,
+    confidence: float,
+    area_ratio: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> dict:
+    return _round_detection_item({
+        "object": class_name,
+        "confidence": confidence,
+        "area_ratio": area_ratio,
+        "bbox": _build_bbox(x1, y1, x2, y2),
+    })
+
+
+def _build_suspicious_object_entry(detection: dict, config: dict) -> dict:
+    return {
+        "object": detection["object"],
+        "confidence": detection["confidence"],
+        "area_ratio": detection["area_ratio"],
+        "bbox": detection["bbox"],
+        "severity": _resolve_suspicious_severity(
+            detection["object"],
+            detection["confidence"],
+            config["severity"],
+        ),
+        "threshold_debug": {
+            "min_confidence": config["min_confidence"],
+            "min_area_ratio": config["min_area_ratio"],
+            "passes_confidence": detection["confidence"] >= config["min_confidence"],
+            "passes_area_ratio": detection["area_ratio"] >= config["min_area_ratio"],
+        },
+    }
+
+
+def _get_counted_person_detections(person_detections: list[dict]) -> list[dict]:
+    if not person_detections:
+        return []
+
+    ranked_people = sorted(
+        person_detections,
+        key=lambda item: (item["area_ratio"], item["confidence"]),
+        reverse=True,
+    )
+    counted_people = []
+
+    for index, person in enumerate(ranked_people):
+        is_primary_candidate = (
+            person["confidence"] >= MIN_PRIMARY_PERSON_CONFIDENCE and
+            person["area_ratio"] >= MIN_PRIMARY_PERSON_BOX_AREA_RATIO
+        )
+        is_secondary_candidate = (
+            person["confidence"] >= MIN_SECONDARY_PERSON_CONFIDENCE and
+            person["area_ratio"] >= MIN_SECONDARY_PERSON_BOX_AREA_RATIO
+        )
+
+        if index == 0:
+            if not (is_primary_candidate or is_secondary_candidate):
+                continue
+            counted_people.append({
+                **person,
+                "counting_role": "primary",
+                "counting_reason": (
+                    "meets_primary_thresholds" if is_primary_candidate
+                    else "largest_person_meets_secondary_thresholds"
+                ),
+            })
+            continue
+
+        if not is_secondary_candidate:
+            continue
+
+        counted_people.append({
+            **person,
+            "counting_role": "secondary",
+            "counting_reason": "meets_secondary_thresholds",
+        })
+
+    return counted_people
+
 class FrameRequest(BaseModel):
     frame: str
 
@@ -52,8 +156,8 @@ async def detect_objects(req: FrameRequest):
         yolo = get_model()
         results = yolo(frame, conf=DETECTION_CONFIDENCE, verbose=False)
 
-        detected = []
-        person_detections = []
+        detected_objects = []
+        all_person_detections = []
 
         for result in results:
             for box in result.boxes:
@@ -67,58 +171,90 @@ async def detect_objects(req: FrameRequest):
                 if area_ratio < MIN_BOX_AREA_RATIO:
                     continue
 
-                item = {
-                    "object": class_name,
-                    "confidence": round(confidence, 2),
-                    "area_ratio": round(area_ratio, 4),
-                }
-                detected.append({
-                    **item
-                })
-                if class_name == "person" and confidence >= 0.45 and area_ratio >= MIN_PERSON_BOX_AREA_RATIO:
-                    person_detections.append(item)
+                detection = _build_detection_item(
+                    class_name=class_name,
+                    confidence=confidence,
+                    area_ratio=area_ratio,
+                    x1=x1,
+                    y1=y1,
+                    x2=x2,
+                    y2=y2,
+                )
+                detected_objects.append(detection)
+
+                if class_name == "person":
+                    all_person_detections.append(detection)
 
         suspicious_map = {}
+        counted_person_detections = _get_counted_person_detections(all_person_detections)
 
-        for d in detected:
-            class_name = d["object"]
+        for detection in detected_objects:
+            class_name = detection["object"]
             if class_name == "person":
                 continue
 
             config = SUSPICIOUS_OBJECTS.get(class_name)
             if config:
-                if d["confidence"] < config["min_confidence"]:
+                if detection["confidence"] < config["min_confidence"]:
                     continue
-                if d["area_ratio"] < config["min_area_ratio"]:
+                if detection["area_ratio"] < config["min_area_ratio"]:
                     continue
 
                 existing = suspicious_map.get(class_name)
-                if existing is None or d["confidence"] > existing["confidence"]:
-                    suspicious_map[class_name] = {
-                        "object": class_name,
-                        "confidence": d["confidence"],
-                        "area_ratio": d["area_ratio"],
-                        "severity": _resolve_suspicious_severity(
-                            class_name,
-                            d["confidence"],
-                            config["severity"],
-                        ),
-                    }
+                if existing is None or detection["confidence"] > existing["confidence"]:
+                    suspicious_map[class_name] = _build_suspicious_object_entry(
+                        detection,
+                        config,
+                    )
 
-        if len(person_detections) > 1:
+        extra_person_detected = len(counted_person_detections) > 1
+        if extra_person_detected:
             suspicious_map["extra_person_detected"] = {
                 "object": "extra person detected",
                 "confidence": 1.0,
-                "count": len(person_detections),
-                "severity": "high"
+                "count": len(counted_person_detections),
+                "all_person_count": len(all_person_detections),
+                "severity": "high",
+                "counted_persons": counted_person_detections,
             }
         suspicious = list(suspicious_map.values())
 
         return {
             "analysis_available": True,
-            "objects_detected": detected,
-            "person_count": len(person_detections),
+            "objects_detected": detected_objects,
+            "person_count": len(counted_person_detections),
+            "person_count_semantics": "counted_persons_for_extra_person_detection",
+            "counted_person_count": len(counted_person_detections),
+            "all_person_count": len(all_person_detections),
+            "all_person_detections": all_person_detections,
+            "counted_person_detections": counted_person_detections,
+            "detection_summary": {
+                "total_detected_objects": len(detected_objects),
+                "all_person_count": len(all_person_detections),
+                "counted_person_count": len(counted_person_detections),
+                "suspicious_object_count": len(suspicious),
+            },
+            "object_thresholds": {
+                "detection_confidence": DETECTION_CONFIDENCE,
+                "min_box_area_ratio": MIN_BOX_AREA_RATIO,
+                "suspicious_objects": SUSPICIOUS_OBJECTS,
+            },
+            "extra_person_detected": {
+                "detected": extra_person_detected,
+                "all_person_count": len(all_person_detections),
+                "counted_person_count": len(counted_person_detections),
+                "counted_persons": counted_person_detections,
+                "thresholds": {
+                    "detection_confidence": DETECTION_CONFIDENCE,
+                    "min_box_area_ratio": MIN_BOX_AREA_RATIO,
+                    "min_primary_person_confidence": MIN_PRIMARY_PERSON_CONFIDENCE,
+                    "min_primary_person_box_area_ratio": MIN_PRIMARY_PERSON_BOX_AREA_RATIO,
+                    "min_secondary_person_confidence": MIN_SECONDARY_PERSON_CONFIDENCE,
+                    "min_secondary_person_box_area_ratio": MIN_SECONDARY_PERSON_BOX_AREA_RATIO,
+                },
+            },
             "suspicious_objects": suspicious,
+            "suspicious_object_count": len(suspicious),
             "suspicious_count": len(suspicious),
             "has_suspicious": len(suspicious) > 0,
             "event": "object_detected" if suspicious else None,
