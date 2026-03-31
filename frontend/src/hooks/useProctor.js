@@ -4,18 +4,18 @@ import axios from "axios";
 const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 const NO_FACE_STREAK_TO_ALERT = 2;
 const FACE_RECOVERY_STREAK = 2;
-const MULTIPLE_FACES_STREAK_TO_ALERT = 3;
+const MULTIPLE_FACES_STREAK_TO_ALERT = 2;
 const HEAD_TURN_STREAK_TO_ALERT = 2;
 const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
 const GAZE_AWAY_STREAK_TO_ALERT = 2;
 const NO_FRAME_STREAK_TO_ALERT = 2;
 const FACE_MISMATCH_STREAK_TO_ALERT = 2;
-const HEAD_TURN_ALERT_COOLDOWN_MS = 5000;
+const HEAD_TURN_ALERT_COOLDOWN_MS = 2000;
 const OBJECT_DETECTED_STREAK_TO_ALERT = 2;
-const OBJECT_ALERT_COOLDOWN_MS = 5000;
-const OBJECT_ANALYSIS_INTERVAL_MS = 3500;
-const MULTIPLE_FACES_ALERT_COOLDOWN_MS = 5000;
-const FACE_MISMATCH_ALERT_COOLDOWN_MS = 5000;
+const OBJECT_ALERT_COOLDOWN_MS = 2000;
+const OBJECT_ANALYSIS_INTERVAL_MS = 2000;
+const MULTIPLE_FACES_ALERT_COOLDOWN_MS = 2000;
+const FACE_MISMATCH_ALERT_COOLDOWN_MS = 2000;
 const MIN_HEAD_POSE_QUALITY_FOR_ALERT = 0.46;
 const MIN_FACE_CONFIDENCE_FOR_STABLE_ALERTS = 0.54;
 const MIN_FACE_AREA_RATIO_FOR_STABLE_ALERTS = 0.024;
@@ -36,8 +36,8 @@ const useProctor = ({
   suppressHeadTurnAlerts = false,
   onAlert,
   onMlFrame,
-  intervalMs = 800,
-  verifyIntervalMs = 45000,
+  intervalMs = 700,
+  verifyIntervalMs = 30000,
 }) => {
   const intervalRef = useRef(null);
   const criticalAnalysisInFlightRef = useRef(false);

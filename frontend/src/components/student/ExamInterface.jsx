@@ -27,14 +27,14 @@ const EXAM_AUDIO_CONSTRAINTS = {
 };
 const TAB_SWITCH_COOLDOWN_MS = 1500;
 const EVENT_LOG_COOLDOWNS_MS = {
-  audio_detected: 8000,
-  head_turned: 7000,
+  audio_detected: 1500,
+  head_turned: 2000,
   gaze_away: 7000,
-  face_not_detected: 4000,
+  face_not_detected: 2000,
   camera_frame_unavailable: 8000,
-  multiple_faces: 6000,
-  object_detected: 8000,
-  face_mismatch: 30000,
+  multiple_faces: 3000,
+  object_detected: 3000,
+  face_mismatch: 3000,
   tab_switch: 1500,
   fullscreen_exit: 3000,
   ml_service_unavailable: 30000,
