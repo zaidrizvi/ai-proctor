@@ -11,16 +11,22 @@ from silero_vad import get_speech_timestamps, load_silero_vad
 
 
 TARGET_SAMPLE_RATE = 16000
-MIN_SUPPORTED_SAMPLE_RATE = 8000
+MIN_SUPPORTED_SAMPLE_RATE = 5000
 MIN_ANALYSIS_WINDOW_MS = 250
-MIN_VOLUME_LEVEL = 0.0018
-SILERO_THRESHOLD = float(os.getenv("SILERO_VAD_THRESHOLD", "0.42"))
-SILERO_NEG_THRESHOLD = float(os.getenv("SILERO_VAD_NEG_THRESHOLD", "0.26"))
+MIN_VOLUME_LEVEL = 0.0012
+SILERO_THRESHOLD = float(os.getenv("SILERO_VAD_THRESHOLD", "0.36"))
+SILERO_NEG_THRESHOLD = float(os.getenv("SILERO_VAD_NEG_THRESHOLD", "0.22"))
 SILERO_MIN_SPEECH_MS = int(os.getenv("SILERO_MIN_SPEECH_MS", "180"))
 SILERO_MIN_SILENCE_MS = int(os.getenv("SILERO_MIN_SILENCE_MS", "120"))
 SILERO_SPEECH_PAD_MS = int(os.getenv("SILERO_SPEECH_PAD_MS", "40"))
-MIN_SPEECH_RATIO = float(os.getenv("SILERO_MIN_SPEECH_RATIO", "0.045"))
-MIN_SPEECH_CONFIDENCE = float(os.getenv("SILERO_MIN_CONFIDENCE", "0.2"))
+MIN_SPEECH_RATIO = float(os.getenv("SILERO_MIN_SPEECH_RATIO", "0.03"))
+MIN_SPEECH_CONFIDENCE = float(os.getenv("SILERO_MIN_CONFIDENCE", "0.16"))
+SOFT_SPEECH_MIN_DURATION_MS = int(os.getenv("SILERO_SOFT_SPEECH_MIN_DURATION_MS", "680"))
+SOFT_SPEECH_MIN_RUN_MS = int(os.getenv("SILERO_SOFT_SPEECH_MIN_RUN_MS", "420"))
+SOFT_SPEECH_MIN_PROBABILITY_RATIO = float(os.getenv("SILERO_SOFT_SPEECH_MIN_RATIO", "0.08"))
+SOFT_SPEECH_MIN_MEAN_PROBABILITY = float(os.getenv("SILERO_SOFT_SPEECH_MIN_MEAN", "0.24"))
+SOFT_SPEECH_MIN_PEAK_PROBABILITY = float(os.getenv("SILERO_SOFT_SPEECH_MIN_PEAK", "0.5"))
+SOFT_SPEECH_MIN_CONFIDENCE = float(os.getenv("SILERO_SOFT_SPEECH_MIN_CONFIDENCE", "0.11"))
 CONFIDENCE_DURATION_REFERENCE_MS = 900
 CONFIDENCE_RUN_REFERENCE_MS = 650
 CONFIDENCE_SPEECH_RATIO_REFERENCE = 0.32
@@ -126,21 +132,41 @@ def analyze_audio_chunk(samples: np.ndarray, sample_rate: int) -> dict:
         mean_active_probability=mean_active_probability,
         peak_probability=peak_probability,
     )
-    speech_detected = (
-        bool(timestamps) and
-        speech_ratio >= MIN_SPEECH_RATIO and
+    soft_speech_sustained_detected = bool(
+        analysis_window_ms >= SOFT_SPEECH_MIN_DURATION_MS and
+        rms >= MIN_VOLUME_LEVEL and
+        probability_ratio >= SOFT_SPEECH_MIN_PROBABILITY_RATIO and
+        mean_probability >= SOFT_SPEECH_MIN_MEAN_PROBABILITY and
+        peak_probability >= SOFT_SPEECH_MIN_PEAK_PROBABILITY and
+        speech_confidence >= SOFT_SPEECH_MIN_CONFIDENCE and
         (
-            speech_confidence >= MIN_SPEECH_CONFIDENCE or
+            longest_segment_ms >= SOFT_SPEECH_MIN_RUN_MS or
+            speech_duration_ms >= int(SOFT_SPEECH_MIN_DURATION_MS * 0.4) or
             (
-                probability_ratio >= 0.18 and
-                speech_duration_ms >= 220 and
-                mean_probability >= 0.34
+                probability_ratio >= max(SOFT_SPEECH_MIN_PROBABILITY_RATIO + 0.03, 0.1) and
+                mean_probability >= (SOFT_SPEECH_MIN_MEAN_PROBABILITY + 0.03)
+            )
+        )
+    )
+    speech_detected = (
+        soft_speech_sustained_detected or
+        (
+            bool(timestamps) and
+            speech_ratio >= MIN_SPEECH_RATIO and
+            (
+                speech_confidence >= MIN_SPEECH_CONFIDENCE or
+                (
+                    probability_ratio >= 0.18 and
+                    speech_duration_ms >= 220 and
+                    mean_probability >= 0.34
+                )
             )
         )
     )
 
     return {
         "speech_detected": speech_detected,
+        "soft_speech_sustained_detected": soft_speech_sustained_detected,
         "volume_level": round(rms, 4),
         "speech_confidence": round(speech_confidence, 4),
         "vad_ratio": round(probability_ratio, 4),
@@ -157,6 +183,13 @@ def analyze_audio_chunk(samples: np.ndarray, sample_rate: int) -> dict:
         "vad_threshold": round(SILERO_THRESHOLD, 3),
         "volume_gate_passed": True,
         "volume_gate_threshold": round(MIN_VOLUME_LEVEL, 4),
+        "detection_path": (
+            "soft_sustained"
+            if soft_speech_sustained_detected and not speech_confidence >= MIN_SPEECH_CONFIDENCE
+            else "standard"
+            if speech_detected
+            else "none"
+        ),
         "confidence_breakdown": confidence_breakdown,
     }
 
@@ -164,6 +197,7 @@ def analyze_audio_chunk(samples: np.ndarray, sample_rate: int) -> dict:
 def _empty_audio_analysis() -> dict:
     return {
         "speech_detected": False,
+        "soft_speech_sustained_detected": False,
         "volume_level": 0.0,
         "speech_confidence": 0.0,
         "vad_ratio": 0.0,
@@ -180,6 +214,7 @@ def _empty_audio_analysis() -> dict:
         "vad_threshold": round(SILERO_THRESHOLD, 3),
         "volume_gate_passed": False,
         "volume_gate_threshold": round(MIN_VOLUME_LEVEL, 4),
+        "detection_path": "none",
         "confidence_breakdown": {
             "coverage_score": 0.0,
             "vad_coverage_score": 0.0,

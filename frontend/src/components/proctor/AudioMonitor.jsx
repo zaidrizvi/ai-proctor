@@ -6,8 +6,13 @@ const ANALYSIS_INTERVAL_MS = 650;
 const MAX_ANALYSIS_WINDOW_MS = 950;
 const MAX_BUFFERED_AUDIO_MS = 1400;
 const ALERT_COOLDOWN_MS = 1200;
-const AUDIO_SMOOTHING_WINDOW = 3;
+const AUDIO_SMOOTHING_WINDOW = 2;
 const MIN_POSITIVE_CHUNKS_FOR_SUSTAINED_STATUS = 2;
+const MIN_POSITIVE_CHUNKS_FOR_SUSTAINED_ALERT = 2;
+const MIN_SUSTAINED_ALERT_CONFIDENCE = 0.14;
+const STRONG_BACKEND_DETECTION_CONFIDENCE = 0.22;
+const STRONG_BACKEND_DETECTION_PEAK = 0.78;
+const STRONG_BACKEND_DETECTION_DURATION_MS = 260;
 const CLIENT_RMS_THRESHOLD = 0.014;
 const CLIENT_PEAK_THRESHOLD = 0.07;
 const CLIENT_MIN_ZCR = 0.022;
@@ -69,7 +74,7 @@ const getSmoothedAudioDecision = (history) => {
     };
   }
 
-  const positiveSamples = history.filter((sample) => sample.backendDetected);
+  const positiveSamples = history.filter((sample) => sample.positiveForAlert);
   const positiveAverageConfidence = positiveSamples.length > 0
     ? positiveSamples.reduce((sum, sample) => sum + sample.rawConfidence, 0) / positiveSamples.length
     : 0;
@@ -216,17 +221,28 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
         const now = Date.now();
         const cooldownElapsed = now - lastAlertAtRef.current >= ALERT_COOLDOWN_MS;
         const backendDetected = Boolean(data.speech_detected);
+        const softSpeechSustainedDetected = Boolean(data.soft_speech_sustained_detected);
         const backendConfidence = Number(data.speech_confidence || 0);
         const backendSpeechDurationMs = Number(
           data.speech_duration_ms || data.speech_run_ms || 0
         );
         const backendPeakProbability = Number(data.speech_probability_peak || 0);
         const backendModel = data.vad_model || "audio_vad";
+        const detectionPath = data.detection_path || "none";
+        const strongBackendDetection = Boolean(
+          backendDetected &&
+          detectionPath !== "soft_sustained" && (
+            backendConfidence >= STRONG_BACKEND_DETECTION_CONFIDENCE ||
+            backendPeakProbability >= STRONG_BACKEND_DETECTION_PEAK ||
+            backendSpeechDurationMs >= STRONG_BACKEND_DETECTION_DURATION_MS
+          )
+        );
 
         analysisHistoryRef.current = [
           ...analysisHistoryRef.current,
           {
             backendDetected,
+            positiveForAlert: backendDetected || softSpeechSustainedDetected,
             confidence: backendConfidence,
             rawConfidence: backendConfidence,
           },
@@ -234,16 +250,20 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
 
         const smoothedDecision = getSmoothedAudioDecision(analysisHistoryRef.current);
         const sustainedDetection = smoothedDecision.detected;
+        const sustainedAlertReady = (
+          smoothedDecision.positiveCount >= MIN_POSITIVE_CHUNKS_FOR_SUSTAINED_ALERT &&
+          smoothedDecision.positiveAverageConfidence >= MIN_SUSTAINED_ALERT_CONFIDENCE
+        );
         const shouldShowDetectedState = backendDetected || sustainedDetection;
 
         if (shouldShowDetectedState) {
           setStatus("detected");
 
-          if (backendDetected && cooldownElapsed) {
+          if ((strongBackendDetection || sustainedAlertReady) && cooldownElapsed) {
             lastAlertAtRef.current = now;
             onAudioDetected?.({
               ...data,
-              speech_detected: backendDetected,
+              speech_detected: backendDetected || sustainedAlertReady,
               speech_confidence: Number(backendConfidence.toFixed(4)),
               raw_backend_speech_confidence: Number(backendConfidence.toFixed(4)),
               frontend_smoothed_confidence: Number(smoothedDecision.positiveAverageConfidence.toFixed(4)),
@@ -258,7 +278,9 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
               temporal_positive_chunks: smoothedDecision.positiveCount,
               temporal_window_size: analysisHistoryRef.current.length,
               temporal_smoothed: sustainedDetection,
-              frontend_alert_source: "backend_detected",
+              frontend_alert_source: strongBackendDetection
+                ? "backend_detected"
+                : "sustained_soft_speech",
             });
           }
 
@@ -284,7 +306,7 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
           audio: {
             channelCount: 1,
             echoCancellation: true,
-            noiseSuppression: true,
+            noiseSuppression: false,
             autoGainControl: true,
           },
           video: false,
