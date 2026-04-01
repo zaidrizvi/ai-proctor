@@ -48,12 +48,12 @@ export const AuthProvider = ({ children }) => {
     return safeData;
   };
 
-  const registerStudent = async (name, email, password, batch = "") => {
+  const registerStudent = async (name, email, password, batchCode = "") => {
     const { data } = await api.post("/auth/register/student", {
       name,
       email,
       password,
-      batch,
+      batchCode,
     });
     setStoredSession(data.role, data);
     const safeData = sanitizeStoredAuthData(data);

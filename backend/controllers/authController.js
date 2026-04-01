@@ -1,5 +1,7 @@
 import User from "../models/User.js";
+import Batch from "../models/Batch.js";
 import generateToken from "../utils/generateToken.js";
+import { isValidBatchCode, normalizeBatchCode } from "../utils/batchCode.js";
 
 const buildAuthResponse = (user) => ({
   _id: user._id,
@@ -12,15 +14,11 @@ const buildAuthResponse = (user) => ({
 });
 
 const registerAccount = async (req, res, enforcedRole) => {
-  const { name, email, password, batch } = req.body;
+  const { name, email, password } = req.body;
   const role = enforcedRole;
 
   if (!name || !email || !password) {
     return res.status(400).json({ message: "Please fill all fields" });
-  }
-
-  if (role === "student" && !batch?.trim()) {
-    return res.status(400).json({ message: "Please select a batch" });
   }
 
   const userExists = await User.findOne({ email });
@@ -28,12 +26,33 @@ const registerAccount = async (req, res, enforcedRole) => {
     return res.status(400).json({ message: "Email already registered" });
   }
 
+  let resolvedBatchName = "";
+
+  if (role === "student") {
+    const batchCode = normalizeBatchCode(req.body.batchCode ?? req.body.batch_code);
+
+    if (!isValidBatchCode(batchCode)) {
+      return res.status(400).json({ message: "Enter a valid 6-digit batch code" });
+    }
+
+    const batch = await Batch.findOne({
+      batchCode,
+      isActive: true,
+    }).select("name");
+
+    if (!batch) {
+      return res.status(400).json({ message: "Invalid batch code" });
+    }
+
+    resolvedBatchName = batch.name;
+  }
+
   const user = await User.create({
     name,
     email,
     password,
     role,
-    batch: role === "student" ? batch.trim() : "",
+    batch: role === "student" ? resolvedBatchName : "",
   });
 
   res.status(201).json(buildAuthResponse(user));

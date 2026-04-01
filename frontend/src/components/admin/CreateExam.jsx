@@ -38,6 +38,7 @@ const CreateExam = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [batchSuccess, setBatchSuccess] = useState("");
   const [showProctor, setShowProctor] = useState(false);
   const [batches, setBatches] = useState([]);
   const [batchName, setBatchName] = useState("");
@@ -60,6 +61,8 @@ const CreateExam = () => {
       .then(({ data }) => setBatches(data))
       .catch(() => setBatches([]));
   }, []);
+
+  const getBatchCodeValue = (batch) => batch?.batchCode || batch?.batch_code || "";
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -116,12 +119,14 @@ const CreateExam = () => {
 
     setCreatingBatch(true);
     setError("");
+    setBatchSuccess("");
 
     try {
       const { data } = await api.post("/batches", { name: trimmedName });
       setBatches((prev) => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
       setForm((prev) => ({ ...prev, batch: data.name }));
       setBatchName("");
+      setBatchSuccess(`Batch "${data.name}" created. Join code: ${getBatchCodeValue(data)}`);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to create batch.");
     } finally {
@@ -309,6 +314,34 @@ const CreateExam = () => {
               </button>
             </div>
           </div>
+
+          {batchSuccess && (
+            <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+              {batchSuccess}
+            </div>
+          )}
+
+          {batches.length > 0 && (
+            <div className="rounded-2xl border p-4" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
+              <p className="text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">
+                Batch Join Codes
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {batches.map((batch) => (
+                  <div
+                    key={batch._id}
+                    className="flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm"
+                    style={{ borderColor: "var(--app-border)", background: "var(--panel-bg)" }}
+                  >
+                    <span className="text-[var(--app-text)]">{batch.name}</span>
+                    <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 font-mono text-xs text-[var(--accent-strong)]">
+                      {getBatchCodeValue(batch) || "Needs update"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div>
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">

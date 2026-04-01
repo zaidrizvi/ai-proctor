@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import axios from "axios";
-import { FiChevronDown, FiEye, FiEyeOff, FiLock, FiMail, FiShield, FiUser } from "react-icons/fi";
+import { FiEye, FiEyeOff, FiLock, FiMail, FiShield, FiUser } from "react-icons/fi";
 import Navbar from "../components/shared/Navbar.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import api from "../utils/api.js";
@@ -16,9 +16,7 @@ const HIGH_QUALITY_VIDEO_CONSTRAINTS = {
 };
 
 const RegisterPage = () => {
-  const [form, setForm] = useState({ name: "", email: "", password: "", batch: "" });
-  const [batches, setBatches] = useState([]);
-  const [batchesLoading, setBatchesLoading] = useState(true);
+  const [form, setForm] = useState({ name: "", email: "", password: "", batchCode: "" });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -32,14 +30,15 @@ const RegisterPage = () => {
   const navigate = useNavigate();
   const isStudent = true;
 
-  const handleChange = (e) => setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    const nextValue =
+      name === "batchCode"
+        ? value.replace(/\D/g, "").slice(0, 6)
+        : value;
 
-  useEffect(() => {
-    api.get("/batches")
-      .then(({ data }) => setBatches(data))
-      .catch(() => setBatches([]))
-      .finally(() => setBatchesLoading(false));
-  }, []);
+    setForm((prev) => ({ ...prev, [name]: nextValue }));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -124,13 +123,13 @@ const RegisterPage = () => {
         return;
       }
 
-      if (!form.batch) {
-        setError("Select your batch before creating a student account.");
+      if (!/^\d{6}$/.test(form.batchCode.trim())) {
+        setError("Enter a valid 6-digit batch code");
         setLoading(false);
         return;
       }
 
-      const data = await registerStudent(form.name, form.email, form.password, form.batch);
+      await registerStudent(form.name, form.email, form.password, form.batchCode);
 
       if (faceImage) {
         try {
@@ -297,32 +296,23 @@ const RegisterPage = () => {
                   {isStudent && (
                     <div>
                       <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">
-                        Batch
+                        Batch Code
                       </label>
-                      <div className="relative">
-                        <select
-                          name="batch"
-                          value={form.batch}
-                          onChange={handleChange}
-                          required={isStudent}
-                          className="theme-input w-full appearance-none rounded-2xl py-3 pr-11 pl-4 text-sm focus:outline-none focus:ring-2"
-                        >
-                          <option value="">
-                            {batchesLoading ? "Loading batches..." : "Select your batch"}
-                          </option>
-                          {batches.map((batch) => (
-                            <option key={batch._id} value={batch.name}>
-                              {batch.name}
-                            </option>
-                          ))}
-                        </select>
-                        <FiChevronDown className="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-sm text-[var(--app-subtle)]" />
-                      </div>
-                      {!batchesLoading && batches.length === 0 && (
-                        <p className="mt-2 text-xs text-amber-400">
-                          No batches are available yet. Ask an admin to create one first.
-                        </p>
-                      )}
+                      <input
+                        type="text"
+                        name="batchCode"
+                        value={form.batchCode}
+                        onChange={handleChange}
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={6}
+                        placeholder="483291"
+                        required={isStudent}
+                        className="theme-input w-full rounded-2xl py-3 px-4 text-sm tracking-[0.24em] focus:outline-none focus:ring-2"
+                      />
+                      <p className="mt-2 text-xs text-[var(--app-muted)]">
+                        Enter the 6-digit batch code shared by your teacher/admin
+                      </p>
                     </div>
                   )}
 

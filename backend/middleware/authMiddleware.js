@@ -1,25 +1,31 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
+const getTokenFromRequest = (req) => {
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith("Bearer")
+  ) {
+    return req.headers.authorization.split(" ")[1];
+  }
+
+  return null;
+};
+
+const getUserFromToken = async (token) => {
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  return User.findById(decoded.id).select("-password");
+};
+
 const protect = async (req, res, next) => {
   try {
-    let token;
-
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith("Bearer")
-    ) {
-      token = req.headers.authorization.split(" ")[1];
-    }
+    const token = getTokenFromRequest(req);
 
     if (!token) {
       return res.status(401).json({ message: "Not authorized, no token" });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // attach user to request (without password)
-    req.user = await User.findById(decoded.id).select("-password");
+    req.user = await getUserFromToken(token);
 
     if (!req.user) {
       return res.status(401).json({ message: "User no longer exists" });
@@ -29,6 +35,21 @@ const protect = async (req, res, next) => {
   } catch (error) {
     console.error("Auth middleware error:", error);
     res.status(401).json({ message: "Not authorized, token failed" });
+  }
+};
+
+export const attachUserIfPresent = async (req, _res, next) => {
+  try {
+    const token = getTokenFromRequest(req);
+    if (!token) {
+      return next();
+    }
+
+    req.user = await getUserFromToken(token);
+    next();
+  } catch {
+    req.user = null;
+    next();
   }
 };
 

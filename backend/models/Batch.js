@@ -8,6 +8,13 @@ const batchSchema = new mongoose.Schema(
       trim: true,
       unique: true,
     },
+    batchCode: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
+      match: [/^\d{6}$/, "Batch code must be a 6-digit numeric code"],
+    },
     isActive: {
       type: Boolean,
       default: true,
