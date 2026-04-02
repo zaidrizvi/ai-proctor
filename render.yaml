@@ -2,7 +2,6 @@ services:
   - type: web
     runtime: static
     name: aiproctor-frontend
-    plan: free
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: frontend/dist
