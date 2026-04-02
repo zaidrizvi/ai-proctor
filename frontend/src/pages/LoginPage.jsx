@@ -15,6 +15,14 @@ const LoginPage = () => {
   const { login } = useAuth();
   const navigate = useNavigate();
 
+  const getLoginErrorMessage = (err) => {
+    if (!err.response) {
+      return "Cannot reach the backend at http://localhost:5000. The server likely crashed during startup because MongoDB is unavailable.";
+    }
+
+    return err.response?.data?.message || "Login failed. Try again.";
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
@@ -24,7 +32,7 @@ const LoginPage = () => {
       const data = await login(email, password);
       navigate(data.role === "admin" ? "/admin" : "/student");
     } catch (err) {
-      setError(err.response?.data?.message || "Login failed. Try again.");
+      setError(getLoginErrorMessage(err));
     } finally {
       setLoading(false);
     }
