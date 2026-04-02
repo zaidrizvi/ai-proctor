@@ -19,16 +19,43 @@ import ExamSession from "./models/ExamSession.js";
 const app = express();
 const server = http.createServer(app);
 const examPresence = new Map();
+const defaultClientOrigin = "http://localhost:5173";
+const allowedOrigins = (process.env.CLIENT_URL || defaultClientOrigin)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const isOriginAllowed = (origin) => {
+  if (!origin) {
+    return true;
+  }
+
+  return allowedOrigins.includes(origin);
+};
 
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error("Origin not allowed by Socket.IO CORS"));
+    },
     methods: ["GET", "POST"],
   },
 });
 
 app.use(cors({
-  origin: process.env.CLIENT_URL || "http://localhost:5173",
+  origin: (origin, callback) => {
+    if (isOriginAllowed(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error("Origin not allowed by CORS"));
+  },
   credentials: true,
 }));
 app.use(express.json({ limit: "10mb" }));

@@ -11,9 +11,14 @@ from routers import audio, face, gaze, head_pose, object_detect
 app = FastAPI(title="AIProctor ML Service", version="1.0.0")
 
 
+def get_allowed_origins():
+    raw_origins = os.getenv("ALLOWED_ORIGINS") or os.getenv("CLIENT_URL") or "http://localhost:5173"
+    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
