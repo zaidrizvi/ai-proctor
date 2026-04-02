@@ -13,6 +13,7 @@ import {
   FiXCircle,
 } from "react-icons/fi";
 import Navbar from "../components/shared/Navbar.jsx";
+import StatusBadge from "../components/shared/StatusBadge.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import api from "../utils/api.js";
 
@@ -82,6 +83,7 @@ const ReportPage = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState("");
 
   useEffect(() => {
     const fetchReport = async () => {
@@ -100,6 +102,7 @@ const ReportPage = () => {
 
   const handleDownloadPDF = async () => {
     setDownloading(true);
+    setDownloadError("");
 
     try {
       const res = await api.get(`/reports/pdf/${sessionId}`, { responseType: "blob" });
@@ -111,7 +114,7 @@ const ReportPage = () => {
       link.click();
       link.remove();
     } catch {
-      alert("Failed to download PDF");
+      setDownloadError("Failed to download PDF.");
     } finally {
       setDownloading(false);
     }
@@ -130,6 +133,15 @@ const ReportPage = () => {
   const student = session.student;
   const sessionOutcome = getSessionOutcome(session);
   const OutcomeIcon = sessionOutcome.icon;
+  const scoreSummary = session.status === "ongoing"
+    ? {
+        value: "--",
+        meta: `${exam?.questions?.length || "-"} questions total`,
+      }
+    : {
+        value: `${session.score}/${exam?.questions?.length}`,
+        meta: "Final score",
+      };
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
@@ -140,7 +152,7 @@ const ReportPage = () => {
 
         <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
           <div className="theme-panel rounded-[32px] p-6 sm:p-8">
-            <div className="mb-8 flex items-center justify-between gap-4">
+            <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => navigate(fallbackReportRoute)}
@@ -155,59 +167,76 @@ const ReportPage = () => {
                 </div>
               </div>
 
-              {isAdmin && (
-                <button
-                  onClick={handleDownloadPDF}
-                  disabled={downloading}
-                  className="theme-primary-btn flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium disabled:opacity-50"
-                >
-                  {downloading ? (
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                  ) : (
-                    <FiDownload />
-                  )}
-                  Download PDF
-                </button>
-              )}
+              <div className="flex flex-wrap items-center gap-3 sm:justify-end">
+                <StatusBadge tone={session.status === "completed" && session.passed ? "success" : session.status === "ongoing" ? "info" : "danger"}>
+                  {sessionOutcome.label}
+                </StatusBadge>
+
+                {isAdmin && (
+                  <button
+                    onClick={handleDownloadPDF}
+                    disabled={downloading}
+                    className="theme-primary-btn flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium disabled:opacity-50"
+                  >
+                    {downloading ? (
+                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    ) : (
+                      <FiDownload />
+                    )}
+                    Download PDF
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-              <div className="space-y-6 lg:col-span-2">
+            {downloadError && (
+              <div className="mb-6 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                {downloadError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <div className="space-y-4 lg:col-span-2">
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="rounded-[28px] border p-6"
+                  className="rounded-[24px] border p-4"
                   style={{ background: "var(--panel-bg)", borderColor: "var(--app-border)" }}
                 >
-                  <div className="mb-6 flex items-center gap-3">
-                    <div className={`flex h-14 w-14 items-center justify-center rounded-2xl ${sessionOutcome.accentBg}`}>
-                      <OutcomeIcon className={`text-2xl ${sessionOutcome.accentText}`} />
+                  <div className="mb-4 flex items-center gap-3">
+                    <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${sessionOutcome.accentBg}`}>
+                      <OutcomeIcon className={`text-xl ${sessionOutcome.accentText}`} />
                     </div>
                     <div>
-                      <p className={`text-lg font-bold ${sessionOutcome.accentText}`}>
+                      <p className={`text-base font-bold ${sessionOutcome.accentText}`}>
                         {sessionOutcome.label}
                       </p>
                       <p className="text-sm text-[var(--app-muted)]">{exam?.subject}</p>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-3 gap-3">
                     {[
                       {
                         label: "Score",
-                        value: session.status === "ongoing"
-                          ? `In Progress / ${exam?.questions?.length || "-"}`
-                          : `${session.score}/${exam?.questions?.length}`,
+                        value: scoreSummary.value,
+                        meta: scoreSummary.meta,
                       },
                       {
                         label: "Percentage",
                         value: session.status === "ongoing" ? "-" : `${session.percentage}%`,
+                        meta: session.status === "ongoing" ? "Available after submission" : "Final percentage",
                       },
-                      { label: "Passing Marks", value: exam?.passingMarks },
-                    ].map(({ label, value }) => (
-                      <div key={label} className="rounded-2xl p-4 text-center" style={{ background: "var(--panel-strong)" }}>
-                        <p className="text-xl font-bold text-[var(--app-text)]">{value}</p>
-                        <p className="mt-1 text-xs text-[var(--app-muted)]">{label}</p>
+                      {
+                        label: "Passing Marks",
+                        value: exam?.passingMarks,
+                        meta: "Required to pass",
+                      },
+                    ].map(({ label, value, meta }) => (
+                      <div key={label} className="rounded-2xl px-3 py-2.5 text-center" style={{ background: "var(--panel-strong)" }}>
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--app-muted)]">{label}</p>
+                        <p className="mt-1.5 text-[1.45rem] font-bold leading-none text-[var(--app-text)]">{value}</p>
+                        <p className="mt-0.5 text-[10px] text-[var(--app-subtle)]">{meta}</p>
                       </div>
                     ))}
                   </div>
@@ -218,7 +247,7 @@ const ReportPage = () => {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.1 }}
-                    className="rounded-[28px] border p-6"
+                    className="rounded-[24px] border p-5"
                     style={{ background: "var(--panel-bg)", borderColor: "var(--app-border)" }}
                   >
                     <h2 className="mb-4 flex items-center gap-2 font-semibold text-[var(--app-text)]">
@@ -257,7 +286,7 @@ const ReportPage = () => {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.1 }}
-                    className="rounded-[28px] border p-6 text-center"
+                    className="rounded-[24px] border p-5 text-center"
                     style={{ background: "var(--panel-bg)", borderColor: "var(--app-border)" }}
                   >
                     <FiShield className="mx-auto mb-3 text-3xl text-[var(--accent-strong)]" />
@@ -270,20 +299,20 @@ const ReportPage = () => {
 
               </div>
 
-              <div className="space-y-6">
+              <div className="space-y-4">
                 {isAdmin && (
                   <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.05 }}
-                    className="rounded-[28px] border p-6"
+                    className="rounded-[24px] border p-5"
                     style={{ background: "var(--panel-bg)", borderColor: "var(--app-border)" }}
                   >
-                    <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--app-text)]">
+                    <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--app-text)]">
                       <FiUser className="text-[var(--accent-strong)]" />
                       Student
                     </h2>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <p className="font-medium text-[var(--app-text)]">{student?.name}</p>
                       <p className="text-sm text-[var(--app-muted)]">{student?.email}</p>
                     </div>
@@ -295,44 +324,44 @@ const ReportPage = () => {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.08 }}
-                    className="rounded-[28px] border p-6"
+                    className="rounded-[24px] border p-5"
                     style={{ background: "var(--panel-bg)", borderColor: "var(--app-border)" }}
                   >
-                    <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--app-text)]">
+                    <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--app-text)]">
                       <FiShield className="text-[var(--accent-strong)]" />
                       Identity Check
                     </h2>
-                    <div className="space-y-4">
+                    <div className="space-y-3">
                       <div>
-                        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">
+                        <p className="mb-1.5 text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">
                           Registered Face
                         </p>
                         {student?.faceImagePath ? (
                           <img
                             src={student.faceImagePath}
                             alt="Registered student face"
-                            className="h-40 w-full rounded-2xl border object-cover"
+                            className="h-36 w-full rounded-2xl border object-cover"
                             style={{ borderColor: "var(--app-border)" }}
                           />
                         ) : (
-                          <div className="flex h-40 items-center justify-center rounded-2xl border text-sm text-[var(--app-muted)]" style={{ borderColor: "var(--app-border)" }}>
+                          <div className="flex h-36 items-center justify-center rounded-2xl border text-sm text-[var(--app-muted)]" style={{ borderColor: "var(--app-border)" }}>
                             No registered face saved
                           </div>
                         )}
                       </div>
                       <div>
-                        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">
+                        <p className="mb-1.5 text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">
                           Exam Verification Face
                         </p>
                         {session?.verificationFaceImagePath ? (
                           <img
                             src={session.verificationFaceImagePath}
                             alt="Exam verification face"
-                            className="h-40 w-full rounded-2xl border object-cover"
+                            className="h-36 w-full rounded-2xl border object-cover"
                             style={{ borderColor: "var(--app-border)" }}
                           />
                         ) : (
-                          <div className="flex h-40 items-center justify-center rounded-2xl border text-sm text-[var(--app-muted)]" style={{ borderColor: "var(--app-border)" }}>
+                          <div className="flex h-36 items-center justify-center rounded-2xl border text-sm text-[var(--app-muted)]" style={{ borderColor: "var(--app-border)" }}>
                             No exam verification image saved
                           </div>
                         )}
@@ -345,14 +374,14 @@ const ReportPage = () => {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.1 }}
-                  className="rounded-[28px] border p-6"
+                  className="rounded-[24px] border p-5"
                   style={{ background: "var(--panel-bg)", borderColor: "var(--app-border)" }}
                 >
-                  <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--app-text)]">
+                  <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--app-text)]">
                     <FiBook className="text-[var(--accent-strong)]" />
                     Exam Info
                   </h2>
-                  <div className="space-y-3 text-sm">
+                  <div className="space-y-2.5 text-sm">
                     {[
                       { label: "Duration", value: `${exam?.duration} mins` },
                       { label: "Started", value: new Date(session.startedAt).toLocaleString() },
@@ -372,14 +401,14 @@ const ReportPage = () => {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.15 }}
-                    className="rounded-[28px] border p-6"
+                    className="rounded-[24px] border p-5"
                     style={{ background: "var(--panel-bg)", borderColor: "var(--app-border)" }}
                   >
-                    <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--app-text)]">
+                    <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--app-text)]">
                       <FiShield className="text-[var(--accent-strong)]" />
                       Proctor Summary
                     </h2>
-                    <div className="space-y-3 text-sm">
+                    <div className="space-y-2.5 text-sm">
                       {[
                         { label: "Suspicion Score", value: `${session.suspicionScore}/100`, highlight: session.suspicionScore > 70 },
                         { label: "Flagged Events", value: session.flaggedEventsCount },

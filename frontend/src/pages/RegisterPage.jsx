@@ -170,39 +170,23 @@ const RegisterPage = () => {
       <div className="relative z-10">
         <Navbar />
 
-        <div className="flex min-h-[calc(100vh-5rem)] items-center justify-center px-4 py-8">
+        <div className="flex min-h-[calc(100vh-4.75rem)] items-center justify-center px-4 py-3">
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, ease: "easeOut" }}
-            className="w-full max-w-6xl"
+            className="w-full max-w-5xl"
           >
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 }}
-              className="mb-6 flex flex-col items-center"
-            >
-              <div
-                className="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl text-white shadow-lg shadow-sky-500/20"
-                style={{ background: "var(--accent-strong)" }}
-              >
-                <FiShield className="text-2xl" />
-              </div>
-              <h1 className="text-3xl font-bold tracking-tight">AIProctor</h1>
-              <p className="mt-1 text-sm text-[var(--app-muted)]">Create your student account</p>
-            </motion.div>
-
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
-              className="theme-panel rounded-[32px] p-5 md:p-7 backdrop-blur-xl"
+              className="theme-panel rounded-[28px] p-4 md:p-5 backdrop-blur-xl"
             >
-              <div className="mb-6 flex flex-col gap-2 border-b pb-5 md:flex-row md:items-end md:justify-between" style={{ borderColor: "var(--app-border)" }}>
+              <div className="mb-4 flex flex-col gap-2 border-b pb-4 md:flex-row md:items-end md:justify-between" style={{ borderColor: "var(--app-border)" }}>
                 <div>
                   <h2 className="text-xl font-semibold">Student signup</h2>
-                  <p className="mt-1 text-sm text-[var(--app-muted)]">
+                  <p className="mt-0.5 text-sm text-[var(--app-muted)]">
                     Create your student account and capture one verification photo.
                   </p>
                 </div>
@@ -221,9 +205,9 @@ const RegisterPage = () => {
                 </motion.div>
               )}
 
-              <form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_380px]">
-                <div className="space-y-4">
-                  <div className="grid gap-4 md:grid-cols-2">
+              <form onSubmit={handleSubmit} className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_340px]">
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-2">
                     <div>
                       <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">
                         Full Name
@@ -237,7 +221,7 @@ const RegisterPage = () => {
                           onChange={handleChange}
                           placeholder="Zaid Khan"
                           required
-                          className="theme-input w-full rounded-2xl py-3 pr-4 pl-10 text-sm focus:outline-none focus:ring-2"
+                          className="theme-input w-full rounded-2xl py-2.5 pr-4 pl-10 text-sm focus:outline-none focus:ring-2"
                         />
                       </div>
                     </div>
@@ -255,13 +239,13 @@ const RegisterPage = () => {
                           onChange={handleChange}
                           placeholder="you@example.com"
                           required
-                          className="theme-input w-full rounded-2xl py-3 pr-4 pl-10 text-sm focus:outline-none focus:ring-2"
+                          className="theme-input w-full rounded-2xl py-2.5 pr-4 pl-10 text-sm focus:outline-none focus:ring-2"
                         />
                       </div>
                     </div>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
                     <div>
                       <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">
                         Password
@@ -275,7 +259,7 @@ const RegisterPage = () => {
                           onChange={handleChange}
                           placeholder="Minimum 6 characters"
                           required
-                          className="theme-input w-full rounded-2xl py-3 pr-11 pl-10 text-sm focus:outline-none focus:ring-2"
+                          className="theme-input w-full rounded-2xl py-2.5 pr-11 pl-10 text-sm focus:outline-none focus:ring-2"
                         />
                         <button
                           type="button"
@@ -287,7 +271,7 @@ const RegisterPage = () => {
                       </div>
                     </div>
 
-                    <div className="rounded-2xl border px-4 py-3 text-sm"
+                    <div className="rounded-2xl border px-4 py-2.5 text-sm"
                       style={{ background: "var(--panel-strong)", borderColor: "var(--app-border)", color: "var(--app-muted)" }}>
                       This page creates student accounts only
                     </div>
@@ -308,15 +292,15 @@ const RegisterPage = () => {
                         maxLength={6}
                         placeholder="483291"
                         required={isStudent}
-                        className="theme-input w-full rounded-2xl py-3 px-4 text-sm tracking-[0.24em] focus:outline-none focus:ring-2"
+                        className="theme-input w-full rounded-2xl px-4 py-2.5 text-sm tracking-[0.24em] focus:outline-none focus:ring-2"
                       />
-                      <p className="mt-2 text-xs text-[var(--app-muted)]">
+                      <p className="mt-1.5 text-xs text-[var(--app-muted)]">
                         Enter the 6-digit batch code shared by your teacher/admin
                       </p>
                     </div>
                   )}
 
-                  <div className="rounded-3xl border p-4 md:p-5" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
+                  <div className="rounded-3xl border p-4" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
                     <p className="text-sm font-semibold text-[var(--app-text)]">
                       {isStudent ? "Before you continue" : "Admin account access"}
                     </p>
@@ -331,7 +315,7 @@ const RegisterPage = () => {
                     type="submit"
                     disabled={loading}
                     whileTap={{ scale: 0.98 }}
-                    className="theme-primary-btn mt-2 flex w-full items-center justify-center gap-2 rounded-2xl py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                    className="theme-primary-btn mt-1 flex w-full items-center justify-center gap-2 rounded-2xl py-2.5 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {loading ? (
                       <>
@@ -344,10 +328,10 @@ const RegisterPage = () => {
                   </motion.button>
                 </div>
 
-                <div className="space-y-4">
+                <div className="space-y-3">
                   {isStudent ? (
-                    <div className="rounded-[28px] border p-4 md:p-5" style={{ borderColor: "var(--app-border)", background: "linear-gradient(180deg, var(--panel-soft) 0%, var(--panel-strong) 100%)" }}>
-                      <div className="mb-4 flex items-start justify-between gap-3">
+                    <div className="rounded-[26px] border p-4" style={{ borderColor: "var(--app-border)", background: "linear-gradient(180deg, var(--panel-soft) 0%, var(--panel-strong) 100%)" }}>
+                      <div className="mb-3 flex items-start justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-[var(--app-text)]">Face Setup</p>
                           <p className="mt-1 text-xs leading-relaxed text-[var(--app-muted)]">
@@ -373,9 +357,9 @@ const RegisterPage = () => {
 
                       <div className="overflow-hidden rounded-[24px] border border-[var(--app-border)] bg-[var(--app-bg)]">
                         {faceImage ? (
-                          <img src={faceImage} alt="Captured reference face" className="h-64 w-full object-cover" />
+                          <img src={faceImage} alt="Captured reference face" className="h-52 w-full object-cover" />
                         ) : cameraStatus === "denied" ? (
-                          <div className="flex h-64 items-center justify-center px-6 text-center text-sm text-red-400">
+                          <div className="flex h-52 items-center justify-center px-6 text-center text-sm text-red-400">
                             Camera access is required to capture the student face.
                           </div>
                         ) : (
@@ -384,17 +368,17 @@ const RegisterPage = () => {
                             autoPlay
                             muted
                             playsInline
-                            className="h-64 w-full object-cover"
+                            className="h-52 w-full object-cover"
                           />
                         )}
                       </div>
 
-                      <div className="mt-3 grid grid-cols-[minmax(0,1fr)_96px] gap-3">
+                      <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)_96px] gap-3">
                         <button
                           type="button"
                           onClick={handleCaptureFace}
                           disabled={loading || cameraStatus !== "ready"}
-                          className="rounded-2xl border border-[var(--app-border)] bg-[var(--panel-bg)] py-3 text-sm font-medium text-[var(--app-text)] transition hover:bg-[var(--panel-soft)] disabled:opacity-50"
+                          className="rounded-2xl border border-[var(--app-border)] bg-[var(--panel-bg)] py-2.5 text-sm font-medium text-[var(--app-text)] transition hover:bg-[var(--panel-soft)] disabled:opacity-50"
                         >
                           {faceImage ? "Retake Face" : "Capture Face"}
                         </button>
@@ -402,7 +386,7 @@ const RegisterPage = () => {
                           type="button"
                           onClick={() => setFaceImage("")}
                           disabled={loading || !faceImage}
-                          className="rounded-2xl border border-[var(--app-border)] px-4 py-3 text-sm font-medium text-[var(--app-muted)] transition hover:bg-[var(--panel-soft)] disabled:opacity-50"
+                          className="rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm font-medium text-[var(--app-muted)] transition hover:bg-[var(--panel-soft)] disabled:opacity-50"
                         >
                           Clear
                         </button>
@@ -432,13 +416,13 @@ const RegisterPage = () => {
                 </div>
               </form>
 
-              <p className="mt-6 text-center text-sm text-[var(--app-muted)]">
+              <p className="mt-4 text-center text-sm text-[var(--app-muted)]">
                 Already have an account?{" "}
                 <Link to="/login" className="font-medium text-[var(--accent-strong)] transition hover:opacity-80">
                   Sign in
                 </Link>
               </p>
-              <p className="mt-2 text-center text-sm text-[var(--app-muted)]">
+              <p className="mt-1.5 text-center text-sm text-[var(--app-muted)]">
                 Teacher/Admin?{" "}
                 <Link to="/register/admin" className="font-medium text-[var(--accent-strong)] transition hover:opacity-80">
                   Use admin signup
@@ -446,7 +430,7 @@ const RegisterPage = () => {
               </p>
             </motion.div>
 
-            <p className="mt-6 text-center text-xs text-[var(--app-subtle)]">
+            <p className="mt-4 text-center text-xs text-[var(--app-subtle)]">
               © 2025 AIProctor · Jamia Hamdard
             </p>
           </motion.div>

@@ -41,8 +41,8 @@ const IDENTITY_URGENT_VERIFY_INTERVAL_MS = 600;
 const IDENTITY_MATCH_FRESHNESS_MS = 4500;
 const IDENTITY_COMPROMISE_WINDOW_MS = 2200;
 const DETECTOR_NO_FACE_IDENTITY_GRACE_MS = 450;
-const MAX_CAPTURE_WIDTH = 1024;
-const JPEG_QUALITY = 0.9;
+const MAX_CAPTURE_WIDTH = 768;
+const JPEG_QUALITY = 0.72;
 const PRIORITY_SUSPICIOUS_OBJECTS = new Set(["cell phone", "book", "remote"]);
 
 const useProctor = ({
@@ -62,9 +62,9 @@ const useProctor = ({
 }) => {
   const intervalRef = useRef(null);
   const criticalAnalysisInFlightRef = useRef(false);
-  const queuedCriticalAnalysisRef = useRef(false);
   const objectAnalysisInFlightRef = useRef(false);
   const verifyAnalysisInFlightRef = useRef(false);
+  const captureCanvasRef = useRef(null);
   const lastIdentityCheckRef = useRef(0);
   const lastObjectCheckAtRef = useRef(0);
   const lastExplicitFaceDetectedAtRef = useRef(0);
@@ -244,7 +244,8 @@ const useProctor = ({
       const scale = sourceWidth > MAX_CAPTURE_WIDTH
         ? MAX_CAPTURE_WIDTH / sourceWidth
         : 1;
-      const canvas = document.createElement("canvas");
+      const canvas = captureCanvasRef.current || document.createElement("canvas");
+      captureCanvasRef.current = canvas;
       canvas.width = Math.max(1, Math.round(sourceWidth * scale));
       canvas.height = Math.max(1, Math.round(sourceHeight * scale));
       const ctx = canvas.getContext("2d");
@@ -860,12 +861,9 @@ const useProctor = ({
       now - lastExtraPersonDetectedAtRef.current <= IDENTITY_COMPROMISE_WINDOW_MS ||
       now - lastExplicitNoFaceAtRef.current <= IDENTITY_COMPROMISE_WINDOW_MS
     );
-    const effectiveVerifyIntervalMs = Math.min(
-      verifyIntervalMs,
-      recentCompromiseSignal
-        ? IDENTITY_URGENT_VERIFY_INTERVAL_MS
-        : IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS
-    );
+    const effectiveVerifyIntervalMs = recentCompromiseSignal
+      ? Math.min(verifyIntervalMs, IDENTITY_URGENT_VERIFY_INTERVAL_MS)
+      : Math.max(verifyIntervalMs, IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS);
     const shouldAttemptIdentityCheck = (
       hasReferenceIdentity &&
       (
@@ -946,7 +944,6 @@ const useProctor = ({
     }
 
     if (criticalAnalysisInFlightRef.current) {
-      queuedCriticalAnalysisRef.current = true;
       return;
     }
 
@@ -1057,13 +1054,6 @@ const useProctor = ({
       if (token === lifecycleTokenRef.current) {
         criticalAnalysisInFlightRef.current = false;
       }
-
-      if (token === lifecycleTokenRef.current && queuedCriticalAnalysisRef.current) {
-        queuedCriticalAnalysisRef.current = false;
-        setTimeout(() => {
-          void analyzeFrame();
-        }, 0);
-      }
     }
   }, [
     examId,
@@ -1123,7 +1113,6 @@ const useProctor = ({
       lifecycleTokenRef.current += 1;
       if (intervalRef.current) clearInterval(intervalRef.current);
       criticalAnalysisInFlightRef.current = false;
-      queuedCriticalAnalysisRef.current = false;
       objectAnalysisInFlightRef.current = false;
       verifyAnalysisInFlightRef.current = false;
       lastObjectCheckAtRef.current = 0;

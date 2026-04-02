@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { FiEye, FiEyeOff, FiLock, FiMail, FiShield } from "react-icons/fi";
+import { FiEye, FiEyeOff, FiLock, FiMail } from "react-icons/fi";
 import Navbar from "../components/shared/Navbar.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 
@@ -54,37 +54,21 @@ const LoginPage = () => {
       <div className="relative z-10">
         <Navbar />
 
-        <div className="flex min-h-[calc(100vh-5rem)] items-center justify-center px-4 py-10">
+        <div className="flex min-h-[calc(100vh-4.75rem)] items-center justify-center px-4 py-5">
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, ease: "easeOut" }}
-            className="w-full max-w-md"
+            className="w-full max-w-lg"
           >
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 }}
-              className="mb-8 flex flex-col items-center"
-            >
-              <div
-                className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl text-white shadow-lg shadow-sky-500/20"
-                style={{ background: "var(--accent-strong)" }}
-              >
-                <FiShield className="text-2xl" />
-              </div>
-              <h1 className="text-3xl font-bold tracking-tight">AIProctor</h1>
-              <p className="mt-1 text-sm text-[var(--app-muted)]">Secure online examination platform</p>
-            </motion.div>
-
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
-              className="theme-panel rounded-[32px] p-8 backdrop-blur-xl"
+              className="theme-panel rounded-[28px] p-6 backdrop-blur-xl"
             >
-              <h2 className="mb-1 text-xl font-semibold">Welcome back</h2>
-              <p className="mb-6 text-sm text-[var(--app-muted)]">Sign in to your account</p>
+              <h2 className="mb-1 text-2xl font-semibold">Welcome back</h2>
+              <p className="mb-7 text-base text-[var(--app-muted)]">Sign in to your account</p>
 
               {error && (
                 <motion.div
@@ -96,7 +80,7 @@ const LoginPage = () => {
                 </motion.div>
               )}
 
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form onSubmit={handleSubmit} className="space-y-5">
                 <div>
                   <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-[var(--app-muted)]">
                     Email
@@ -109,7 +93,7 @@ const LoginPage = () => {
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="you@example.com"
                       required
-                      className="theme-input w-full rounded-2xl py-3 pr-4 pl-10 text-sm focus:outline-none focus:ring-2"
+                      className="theme-input w-full rounded-2xl py-3.5 pr-4 pl-10 text-base focus:outline-none focus:ring-2"
                     />
                   </div>
                 </div>
@@ -126,7 +110,7 @@ const LoginPage = () => {
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="........"
                       required
-                      className="theme-input w-full rounded-2xl py-3 pr-11 pl-10 text-sm focus:outline-none focus:ring-2"
+                      className="theme-input w-full rounded-2xl py-3.5 pr-11 pl-10 text-base focus:outline-none focus:ring-2"
                     />
                     <button
                       type="button"
@@ -142,7 +126,7 @@ const LoginPage = () => {
                   type="submit"
                   disabled={loading}
                   whileTap={{ scale: 0.98 }}
-                  className="theme-primary-btn mt-2 flex w-full items-center justify-center gap-2 rounded-2xl py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                  className="theme-primary-btn mt-3 flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {loading ? (
                     <>
@@ -155,7 +139,7 @@ const LoginPage = () => {
                 </motion.button>
               </form>
 
-              <p className="mt-6 text-center text-sm text-[var(--app-muted)]">
+              <p className="mt-5 text-center text-sm text-[var(--app-muted)]">
                 Student?{" "}
                 <Link to="/register" className="font-medium text-[var(--accent-strong)] transition hover:opacity-80">
                   Student signup
@@ -170,7 +154,7 @@ const LoginPage = () => {
             </motion.div>
 
             <p className="mt-6 text-center text-xs text-[var(--app-subtle)]">
-              © 2025 AIProctor · Jamia Hamdard
+              © 2025 AIProctor 
             </p>
           </motion.div>
         </div>

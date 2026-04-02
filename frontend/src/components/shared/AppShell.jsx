@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { FiLogOut, FiShield, FiX } from "react-icons/fi";
+import { FiLogOut, FiX } from "react-icons/fi";
 import { useAuth } from "../../context/AuthContext.jsx";
 import Navbar from "./Navbar.jsx";
 
@@ -11,6 +11,7 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const currentPath = location.pathname.replace(`${basePath}/`, "").split("/")[0];
+  const activeNavItem = navItems.find(({ path }) => currentPath === path) || navItems[0];
 
   const handleLogout = () => {
     logout();
@@ -18,7 +19,7 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
   };
 
   return (
-    <div className="min-h-screen bg-[var(--app-bg)] text-[var(--app-text)] relative overflow-hidden">
+    <div className="relative min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
       <div className="pointer-events-none absolute inset-0 opacity-90" style={{ background: "var(--app-gradient)" }} />
 
       {sidebarOpen && (
@@ -32,7 +33,7 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
 
       <div className="relative z-10 flex min-h-screen">
         <aside
-          className={`fixed inset-y-0 left-0 z-50 w-72 border-r px-5 py-5 transition-transform duration-300 lg:static lg:translate-x-0 ${
+          className={`fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r px-4 py-4 transition-transform duration-300 lg:static lg:translate-x-0 ${
             sidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
           style={{
@@ -42,20 +43,16 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
             backdropFilter: "blur(20px)",
           }}
         >
-          <div className="mb-8 flex items-center justify-between lg:justify-start">
+          <div className="mb-6 flex items-center justify-between lg:justify-start">
             <button
               type="button"
               onClick={() => navigate(basePath)}
-              className="flex items-center gap-3 text-left"
+              className="text-left"
             >
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--accent-strong)] text-white shadow-lg shadow-sky-500/20">
-                <FiShield className="text-lg" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold tracking-[0.18em] uppercase text-[var(--app-muted)]">
-                  AIProctor
-                </p>
-              </div>
+              <p className="text-[0.92rem] font-semibold uppercase tracking-[0.26em] text-[var(--app-text)]">
+                AIProctor
+              </p>
+              <p className="mt-1 text-xs text-[var(--app-subtle)]">{sectionLabel}</p>
             </button>
 
             <button
@@ -69,26 +66,31 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
           </div>
 
           <div
-            className="mb-6 rounded-[28px] border p-4"
+            className="mb-5 rounded-[24px] border px-4 py-3.5"
             style={{
               background: "var(--panel-soft)",
               borderColor: "var(--app-border)",
             }}
           >
-            <p className="text-xs uppercase tracking-[0.22em] text-[var(--app-subtle)]">Signed in as</p>
-            <div className="mt-3 flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--accent-soft)] font-semibold text-[var(--accent-strong)]">
+            <p className="text-[10px] uppercase tracking-[0.24em] text-[var(--app-subtle)]">Signed in as</p>
+            <div className="mt-2.5 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-sm font-semibold text-[var(--accent-strong)]">
                 {user?.name?.charAt(0)?.toUpperCase() || "U"}
               </div>
               <div className="min-w-0">
-                <p className="truncate font-medium text-[var(--app-text)]">{user?.name}</p>
+                <p className="truncate text-sm font-medium text-[var(--app-text)]">{user?.name}</p>
+                <p className="truncate text-xs text-[var(--app-subtle)]">
+                  {user?.role === "admin" ? "Admin workspace" : "Student workspace"}
+                </p>
               </div>
             </div>
           </div>
 
-          <nav className="space-y-2">
+          <nav className="space-y-1.5">
             {navItems.map(({ path, label, icon: Icon, caption }) => {
-              const isActive = currentPath === path || (currentPath === basePath.replace("/", "") && path === navItems[0]?.path);
+              const isActive =
+                currentPath === path ||
+                (currentPath === basePath.replace("/", "") && path === navItems[0]?.path);
 
               return (
                 <button
@@ -98,7 +100,7 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
                     navigate(`${basePath}/${path}`);
                     setSidebarOpen(false);
                   }}
-                  className="group flex w-full items-center gap-3 rounded-[22px] border px-4 py-3 text-left transition-all duration-200"
+                  className="group flex w-full items-center gap-3 rounded-[20px] border px-3.5 py-3 text-left transition-all duration-200"
                   style={{
                     background: isActive ? "var(--nav-active-bg)" : "var(--panel-soft)",
                     borderColor: isActive ? "var(--nav-active-border)" : "transparent",
@@ -106,17 +108,17 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
                   }}
                 >
                   <div
-                    className="flex h-11 w-11 items-center justify-center rounded-2xl transition-colors"
+                    className="flex h-10 w-10 items-center justify-center rounded-2xl transition-colors"
                     style={{
                       background: isActive ? "var(--accent-soft)" : "var(--nav-icon-bg)",
                       color: isActive ? "var(--accent-strong)" : "var(--app-muted)",
                     }}
                   >
-                    <Icon className="text-lg" />
+                    <Icon className="text-[1.05rem]" />
                   </div>
                   <div className="min-w-0">
-                    <p className="truncate font-medium">{label}</p>
-                    <p className="truncate text-xs text-[var(--app-subtle)]">{caption}</p>
+                    <p className="truncate text-sm font-medium">{label}</p>
+                    <p className="truncate text-[11px] text-[var(--app-subtle)]">{caption}</p>
                   </div>
                 </button>
               );
@@ -126,28 +128,34 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
           <button
             type="button"
             onClick={handleLogout}
-            className="mt-6 flex w-full items-center gap-3 rounded-[22px] border px-4 py-3 text-left transition-colors hover:bg-red-500/10 hover:text-red-400"
+            className="mt-auto flex w-full items-center gap-3 rounded-[20px] border px-3.5 py-3 text-left transition-colors hover:bg-red-500/10 hover:text-red-400"
             style={{
               borderColor: "var(--app-border)",
               background: "var(--panel-soft)",
               color: "var(--app-muted)",
             }}
           >
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-red-500/10 text-red-400">
-              <FiLogOut className="text-lg" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-red-500/10 text-red-400">
+              <FiLogOut className="text-[1.05rem]" />
             </div>
             <div>
-              <p className="font-medium">Sign Out</p>
-              <p className="text-xs text-[var(--app-subtle)]">End this session</p>
+              <p className="text-sm font-medium">Sign Out</p>
+              <p className="text-[11px] text-[var(--app-subtle)]">End this session</p>
             </div>
           </button>
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <Navbar showMenuButton onMenuClick={() => setSidebarOpen(true)} />
-          <main className="flex-1 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
+          <Navbar
+            showMenuButton
+            onMenuClick={() => setSidebarOpen(true)}
+            contextLabel={activeNavItem?.label || sectionLabel}
+            contextCaption={activeNavItem?.caption || sectionLabel}
+            showBrand={false}
+          />
+          <main className="flex-1 px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
             <div
-              className="min-h-[calc(100vh-7rem)] rounded-[32px] border px-4 py-5 sm:px-6 lg:px-8"
+              className="min-h-[calc(100vh-6.5rem)] rounded-[30px] border px-3 py-3 sm:px-4 lg:px-5"
               style={{
                 background: "var(--shell-main)",
                 borderColor: "var(--app-border)",

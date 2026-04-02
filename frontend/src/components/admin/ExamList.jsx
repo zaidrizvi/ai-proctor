@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { FiAlertCircle, FiBook, FiClock, FiHash, FiMonitor, FiPlus, FiTrash2 } from "react-icons/fi";
+import { FiAlertCircle, FiBook, FiClock, FiHash, FiMonitor, FiPlus, FiTrash2, FiZap } from "react-icons/fi";
 import api from "../../utils/api.js";
+import ConfirmationDialog from "../shared/ConfirmationDialog.jsx";
+import StatusBadge from "../shared/StatusBadge.jsx";
 
 const ExamList = () => {
   const [exams, setExams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [feedback, setFeedback] = useState({ type: "", text: "" });
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -26,16 +30,19 @@ const ExamList = () => {
     fetchExams();
   }, []);
 
-  const handleDelete = async (id) => {
-    if (!confirm("Delete this exam? This cannot be undone.")) return;
+  const handleDelete = async () => {
+    if (!pendingDelete) return;
 
-    setDeleting(id);
+    setDeleting(pendingDelete._id);
+    setFeedback({ type: "", text: "" });
 
     try {
-      await api.delete(`/exams/${id}`);
-      setExams((prev) => prev.filter((exam) => exam._id !== id));
+      await api.delete(`/exams/${pendingDelete._id}`);
+      setExams((prev) => prev.filter((exam) => exam._id !== pendingDelete._id));
+      setFeedback({ type: "success", text: `"${pendingDelete.title}" was deleted.` });
+      setPendingDelete(null);
     } catch {
-      alert("Failed to delete exam.");
+      setFeedback({ type: "error", text: "Failed to delete exam." });
     } finally {
       setDeleting(null);
     }
@@ -50,21 +57,52 @@ const ExamList = () => {
   }
 
   return (
-    <div>
-      <div className="mb-8 flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-[var(--app-text)]">My Exams</h1>
-          <p className="mt-1 text-sm text-[var(--app-muted)]">
-            {exams.length} exam{exams.length !== 1 ? "s" : ""} created
-          </p>
+    <div className="space-y-4">
+      <div
+        className="theme-panel relative overflow-hidden rounded-[24px] px-4 py-3.5"
+      >
+        <div
+          className="pointer-events-none absolute inset-y-0 right-0 w-64 opacity-80"
+          style={{
+            background:
+              "radial-gradient(circle at center, rgba(14, 165, 233, 0.14), transparent 65%)",
+          }}
+        />
+        <div className="relative flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+              Exam Library
+            </p>
+            <h1 className="mt-1 text-[1.75rem] font-semibold tracking-tight text-[var(--app-text)]">
+              My Exams
+            </h1>
+            <p className="mt-1 max-w-2xl text-sm text-[var(--app-muted)]">
+              Manage scheduled assessments, launch live monitoring, and keep your exam set organized.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+            <div className="flex gap-2">
+              <div
+                className="rounded-2xl border px-3.5 py-2"
+                style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}
+              >
+                <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-subtle)]">
+                  Total Exams
+                </p>
+                <p className="mt-0.5 text-[1.1rem] font-semibold text-[var(--app-text)]">{exams.length}</p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => navigate("/admin/create")}
+              className="theme-primary-btn flex items-center justify-center gap-2 rounded-2xl px-4 py-2 text-sm font-medium"
+            >
+              <FiPlus />
+              New Exam
+            </button>
+          </div>
         </div>
-        <button
-          onClick={() => navigate("/admin/create")}
-          className="theme-primary-btn flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium"
-        >
-          <FiPlus />
-          New Exam
-        </button>
       </div>
 
       {error && (
@@ -74,11 +112,21 @@ const ExamList = () => {
         </div>
       )}
 
+      {feedback.text && (
+        <div className={`mb-6 rounded-2xl border px-4 py-3 text-sm ${
+          feedback.type === "error"
+            ? "border-red-500/30 bg-red-500/10 text-red-300"
+            : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+        }`}>
+          {feedback.text}
+        </div>
+      )}
+
       {exams.length === 0 ? (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex h-64 flex-col items-center justify-center text-center"
+          className="theme-panel flex h-72 flex-col items-center justify-center rounded-[30px] text-center"
         >
           <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-3xl" style={{ background: "var(--panel-strong)" }}>
             <FiBook className="text-2xl text-[var(--app-subtle)]" />
@@ -94,7 +142,7 @@ const ExamList = () => {
           </button>
         </motion.div>
       ) : (
-        <div className="grid gap-4">
+        <div className="grid gap-3">
           <AnimatePresence>
             {exams.map((exam, index) => (
               <motion.div
@@ -103,64 +151,113 @@ const ExamList = () => {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, x: -20 }}
                 transition={{ delay: index * 0.05 }}
-                className="rounded-[28px] border p-5"
-                style={{ background: "var(--panel-bg)", borderColor: "var(--app-border)", boxShadow: "var(--panel-shadow)" }}
+                className="group relative overflow-hidden rounded-[24px] border px-4 py-3"
+                style={{
+                  background: "var(--panel-bg)",
+                  borderColor: "var(--app-border)",
+                  boxShadow: "var(--panel-shadow)",
+                }}
               >
-                <div className="flex items-start justify-between gap-4">
+                <div
+                  className="pointer-events-none absolute inset-y-0 left-0 w-1.5"
+                  style={{
+                    background: exam.isActive
+                      ? "linear-gradient(180deg, rgba(14, 165, 233, 0.9), rgba(34, 197, 94, 0.65))"
+                      : "linear-gradient(180deg, rgba(100, 116, 139, 0.8), rgba(71, 85, 105, 0.45))",
+                  }}
+                />
+                <div
+                  className="pointer-events-none absolute -right-10 top-0 h-28 w-28 rounded-full blur-3xl transition-opacity duration-300 group-hover:opacity-100"
+                  style={{
+                    background: "rgba(14, 165, 233, 0.08)",
+                    opacity: 0.7,
+                  }}
+                />
+
+                <div className="relative flex flex-col gap-2.5 xl:flex-row xl:items-start xl:justify-between">
                   <div className="min-w-0 flex-1">
-                    <div className="mb-1 flex items-center gap-2">
-                      <h3 className="truncate font-semibold text-[var(--app-text)]">{exam.title}</h3>
-                      <span
-                        className="rounded-full px-2 py-0.5 text-xs"
-                        style={exam.isActive
-                          ? { background: "rgba(34, 197, 94, 0.12)", color: "#4ade80", border: "1px solid rgba(34, 197, 94, 0.2)" }
-                          : { background: "var(--panel-strong)", color: "var(--app-muted)", border: "1px solid var(--app-border)" }}
-                      >
-                        {exam.isActive ? "Active" : "Inactive"}
-                      </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="truncate text-[1.18rem] font-semibold tracking-tight text-[var(--app-text)]">
+                        {exam.title}
+                      </h3>
                     </div>
 
-                    <p className="text-sm text-[var(--app-muted)]">{exam.subject}</p>
+                    <p className="mt-0.5 text-sm font-medium text-[var(--accent-strong)]">{exam.subject}</p>
                     {exam.description && (
-                      <p className="mt-1 truncate text-xs text-[var(--app-subtle)]">{exam.description}</p>
+                      <p className="mt-0.5 max-w-3xl truncate text-sm text-[var(--app-muted)]">{exam.description}</p>
                     )}
 
-                    <div className="mt-3 flex flex-wrap items-center gap-4">
-                      <span className="flex items-center gap-1.5 text-xs text-[var(--app-muted)]">
-                        <FiHash className="text-[var(--accent-strong)]" />
-                        {exam.questions.length} questions
-                      </span>
-                      <span className="flex items-center gap-1.5 text-xs text-[var(--app-muted)]">
-                        <FiClock className="text-[var(--accent-strong)]" />
-                        {exam.duration} mins
-                      </span>
-                      <span className="flex items-center gap-1.5 text-xs text-[var(--app-muted)]">
-                        <FiBook className="text-[var(--accent-strong)]" />
-                        Pass: {exam.passingMarks} / {exam.questions.length}
-                      </span>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <div
+                        className="flex min-w-[116px] items-center gap-2 rounded-2xl border px-2.5 py-1.5"
+                        style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}
+                      >
+                        <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent-strong)]">
+                          <FiHash className="text-[13px]" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-subtle)]">Questions</p>
+                          <p className="text-sm font-medium text-[var(--app-text)]">{exam.questions.length}</p>
+                        </div>
+                      </div>
+                      <div
+                        className="flex min-w-[116px] items-center gap-2 rounded-2xl border px-2.5 py-1.5"
+                        style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}
+                      >
+                        <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent-strong)]">
+                          <FiClock className="text-[13px]" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-subtle)]">Duration</p>
+                          <p className="text-sm font-medium text-[var(--app-text)]">{exam.duration} mins</p>
+                        </div>
+                      </div>
+                      <div
+                        className="flex min-w-[128px] items-center gap-2 rounded-2xl border px-2.5 py-1.5"
+                        style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}
+                      >
+                        <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent-strong)]">
+                          <FiBook className="text-[13px]" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-subtle)]">Pass Mark</p>
+                          <p className="text-sm font-medium text-[var(--app-text)]">
+                            {exam.passingMarks} / {exam.questions.length}
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex flex-shrink-0 items-center gap-2">
-                    <button
-                      onClick={() => navigate(`/admin/live?examId=${exam._id}`)}
-                      className="theme-soft-btn flex items-center gap-1.5 rounded-2xl px-3 py-2 text-xs font-medium"
+                  <div className="flex flex-shrink-0 flex-col gap-2 xl:min-w-[190px] xl:items-end">
+                    <div
+                      className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium"
+                      style={{ borderColor: "var(--nav-active-border)", background: "var(--accent-soft)", color: "var(--accent-strong)" }}
                     >
-                      <FiMonitor className="text-xs" />
-                      Monitor
-                    </button>
-                    <button
-                      onClick={() => handleDelete(exam._id)}
-                      disabled={deleting === exam._id}
-                      className="flex items-center gap-1.5 rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-400 disabled:opacity-50"
-                    >
-                      {deleting === exam._id ? (
-                        <div className="h-3 w-3 animate-spin rounded-full border border-red-400 border-t-transparent" />
-                      ) : (
-                        <FiTrash2 className="text-xs" />
-                      )}
-                      Delete
-                    </button>
+                      <FiZap className="text-[11px]" />
+                      {exam.subject}
+                    </div>
+                    <div className="flex flex-wrap gap-2 xl:justify-end">
+                      <button
+                        onClick={() => navigate(`/admin/live?examId=${exam._id}`)}
+                        className="theme-soft-btn flex items-center gap-1.5 rounded-2xl px-3 py-1.5 text-xs font-medium"
+                      >
+                        <FiMonitor className="text-xs" />
+                        Monitor
+                      </button>
+                      <button
+                        onClick={() => setPendingDelete(exam)}
+                        disabled={deleting === exam._id}
+                        className="flex items-center gap-1.5 rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 disabled:opacity-50"
+                      >
+                        {deleting === exam._id ? (
+                          <div className="h-3 w-3 animate-spin rounded-full border border-red-400 border-t-transparent" />
+                        ) : (
+                          <FiTrash2 className="text-xs" />
+                        )}
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </div>
               </motion.div>
@@ -168,6 +265,16 @@ const ExamList = () => {
           </AnimatePresence>
         </div>
       )}
+
+      <ConfirmationDialog
+        open={Boolean(pendingDelete)}
+        title="Delete Exam?"
+        description={pendingDelete ? `This will permanently delete "${pendingDelete.title}" and cannot be undone.` : ""}
+        confirmLabel="Delete Exam"
+        loading={Boolean(pendingDelete && deleting === pendingDelete._id)}
+        onCancel={() => !deleting && setPendingDelete(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 };

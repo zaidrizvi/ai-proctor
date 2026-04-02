@@ -144,7 +144,7 @@ const getClientSpeechMetrics = (samples) => {
   };
 };
 
-const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
+const AudioMonitor = ({ onAudioDetected, enabled = true, showStatus = true }) => {
   const [status, setStatus] = useState("starting");
   const audioContextRef = useRef(null);
   const streamRef = useRef(null);
@@ -381,6 +381,7 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
   }, [enabled, onAudioDetected]);
 
   if (!enabled) return null;
+  if (!showStatus) return null;
 
   return (
     <div className="mt-1">
@@ -388,15 +389,15 @@ const AudioMonitor = ({ onAudioDetected, enabled = true }) => {
           <div
           className={`w-1.5 h-1.5 rounded-full ${
             status === "listening"
-              ? "bg-green-400 animate-pulse"
+              ? "bg-emerald-400 animate-pulse"
               : status === "detected"
               ? "bg-red-400 animate-ping"
               : status === "denied"
               ? "bg-red-400"
-              : "bg-gray-500"
+              : "bg-[var(--app-subtle)]"
           }`}
         />
-        <p className="text-gray-500 text-xs">
+        <p className="text-xs text-[var(--app-muted)]">
           Audio:{" "}
           {status === "listening"
             ? "Silero VAD active"

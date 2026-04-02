@@ -153,7 +153,26 @@ export const getExams = async (req, res) => {
         ? exams.filter((exam) => studentCanAccessExam(exam, req.user))
         : exams;
 
-    res.json(visibleExams);
+    if (req.user.role !== "student" || visibleExams.length === 0) {
+      return res.json(visibleExams);
+    }
+
+    const existingSessions = await ExamSession.find({
+      exam: { $in: visibleExams.map((exam) => exam._id) },
+      student: req.user._id,
+    }).select("exam status");
+
+    const completedExamIds = new Set(
+      existingSessions
+        .filter((session) => session.status === "completed")
+        .map((session) => session.exam.toString())
+    );
+
+    const availableExams = visibleExams.filter(
+      (exam) => !completedExamIds.has(exam._id.toString())
+    );
+
+    res.json(availableExams);
   } catch (error) {
     console.error("Get exams error:", error);
     res.status(500).json({ message: "Server error" });

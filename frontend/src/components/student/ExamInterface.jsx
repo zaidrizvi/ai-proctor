@@ -7,9 +7,16 @@ import { getTokenForPath } from "../../utils/authStorage.js";
 import { useSocket } from "../../context/SocketContext.jsx";
 import useProctor from "../../hooks/useProctor.js";
 import AudioMonitor from "../proctor/AudioMonitor.jsx";
+import StatusBadge from "../shared/StatusBadge.jsx";
 import {
-  FiCamera, FiCameraOff, FiClock, FiAlertTriangle,
-  FiCheckCircle, FiChevronLeft, FiChevronRight, FiShield,
+  FiAlertTriangle,
+  FiCamera,
+  FiCameraOff,
+  FiCheckCircle,
+  FiChevronLeft,
+  FiChevronRight,
+  FiClock,
+  FiShield,
 } from "react-icons/fi";
 
 void motion;
@@ -39,6 +46,8 @@ const EVENT_LOG_COOLDOWNS_MS = {
   fullscreen_exit: 3000,
   ml_service_unavailable: 30000,
 };
+const SHOW_STUDENT_DEBUG_UI = false;
+const SHOW_STUDENT_ML_PREVIEW = true;
 const LIVE_ALERT_LIMIT = 4;
 const BASELINE_MIN_POSE_QUALITY = 0.56;
 const BASELINE_RETRY_DELAY_MS = 3500;
@@ -81,6 +90,32 @@ const EVENT_LABELS = {
   fullscreen_exit: "Fullscreen Exit",
   face_mismatch: "Face Mismatch",
   ml_service_unavailable: "ML Unavailable",
+};
+
+const getSeverityClassName = (severity) => {
+  if (severity === "high") return "border-red-500/30 bg-red-500/10 text-red-300";
+  if (severity === "medium") return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+  return "border-sky-500/30 bg-sky-500/10 text-sky-200";
+};
+
+const getIdentityTone = (status) => {
+  if (["verified", "ready"].includes(status)) return "success";
+  if (["mismatch", "invalid_reference", "service_unavailable", "microphone_denied", "missing"].includes(status)) return "danger";
+  return "warning";
+};
+
+const getIdentityLabel = (status) => {
+  if (status === "verified") return "Verified";
+  if (status === "ready") return "Ready";
+  if (status === "mismatch") return "Mismatch";
+  if (status === "service_unavailable") return "Service unavailable";
+  if (status === "microphone_denied") return "Mic needed";
+  if (status === "missing") return "Reference missing";
+  if (status === "enrolling") return "Saving reference";
+  if (status === "verifying") return "Verifying";
+  if (status === "starting") return "Starting exam";
+  if (status === "fullscreen_required") return "Fullscreen needed";
+  return "Pending";
 };
 
 const isStableAgainstPrevious = (previousSample, nextSample, maxDeltas) => {
@@ -211,24 +246,24 @@ const WebcamMonitor = ({ onAlert, videoRef: externalVideoRef, streamRef: externa
 
   return (
     <div className="relative">
-      <div className={`rounded-xl overflow-hidden border-2 transition-colors ${
-        camStatus === "active" ? "border-green-500/30" : "border-red-500/30"
+      <div className={`overflow-hidden rounded-[22px] border transition-colors ${
+        camStatus === "active" ? "border-emerald-500/30" : "border-red-500/30"
       }`}>
         {camStatus === "denied" ? (
-          <div className="w-full aspect-video bg-gray-800 flex flex-col items-center justify-center gap-2">
-            <FiCameraOff className="text-red-400 text-2xl" />
-            <p className="text-red-400 text-xs">Camera denied</p>
+          <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 bg-[var(--panel-strong)]">
+            <FiCameraOff className="text-2xl text-red-300" />
+            <p className="text-xs text-red-300">Camera denied</p>
           </div>
         ) : (
           <video ref={videoRef} autoPlay muted playsInline
-            className="w-full aspect-video object-contain bg-gray-800" />
+            className="aspect-video w-full bg-[var(--app-bg)] object-contain" />
         )}
       </div>
-      <div className={`absolute top-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium ${
-        camStatus === "active" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+      <div className={`absolute left-2 top-2 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+        camStatus === "active" ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"
       }`}>
         <div className={`w-1.5 h-1.5 rounded-full ${
-          camStatus === "active" ? "bg-green-400 animate-pulse" : "bg-red-400"
+          camStatus === "active" ? "bg-emerald-400 animate-pulse" : "bg-red-400"
         }`} />
         {camStatus === "active" ? "Live" : "Offline"}
       </div>
@@ -267,10 +302,10 @@ const Timer = ({ duration, onExpire }) => {
   const isCritical = seconds < 60;
 
   return (
-    <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-mono font-semibold ${
-      isCritical ? "bg-red-500/20 text-red-400 border border-red-500/30"
-      : isWarning ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
-      : "bg-gray-800 text-white border border-gray-700"
+    <div className={`flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm font-mono font-semibold ${
+      isCritical ? "border-red-500/30 bg-red-500/12 text-red-300"
+      : isWarning ? "border-amber-500/30 bg-amber-500/12 text-amber-200"
+      : "border-[var(--app-border)] bg-[var(--panel-soft)] text-[var(--app-text)]"
     }`}>
       <FiClock className={isCritical ? "animate-pulse" : ""} />
       {String(mins).padStart(2, "0")}:{String(secs).padStart(2, "0")}
@@ -314,6 +349,7 @@ const ExamInterface = () => {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [result, setResult] = useState(null);
+  const [submissionError, setSubmissionError] = useState("");
   const [referenceFace, setReferenceFace] = useState("");
   const [referenceFaceEmbedding, setReferenceFaceEmbedding] = useState([]);
   const [studentId, setStudentId] = useState("");
@@ -382,6 +418,10 @@ const ExamInterface = () => {
   }, []);
 
   const pushLiveAlert = useCallback((eventType, severity, description) => {
+    if (!SHOW_STUDENT_DEBUG_UI) {
+      return;
+    }
+
     setLiveAlerts((prev) => [
       {
         id: `${eventType}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -429,6 +469,10 @@ const ExamInterface = () => {
   }, []);
 
   const handleMlFramePreview = useCallback((frame) => {
+    if (!SHOW_STUDENT_ML_PREVIEW) {
+      return;
+    }
+
     const now = Date.now();
     if (now - lastMlFramePreviewAtRef.current < 800) {
       return;
@@ -1331,6 +1375,7 @@ const ExamInterface = () => {
 
   const submitExam = async () => {
     setSubmitting(true);
+    setSubmissionError("");
     fullscreenReadyRef.current = false;
     if (document.fullscreenElement) {
       try {
@@ -1352,7 +1397,7 @@ const ExamInterface = () => {
       setResult(data);
       setSubmitted(true);
     } catch (err) {
-      alert(err.response?.data?.message || "Submission failed. Please try again.");
+      setSubmissionError(err.response?.data?.message || "Submission failed. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -1361,10 +1406,10 @@ const ExamInterface = () => {
   // ── loading / error ─────────────────────────────────────────
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-950">
-        <div className="text-center">
-          <div className="w-10 h-10 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-400 text-sm">Setting up exam...</p>
+      <div className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-6" style={{ backgroundImage: "var(--app-gradient)" }}>
+        <div className="theme-panel rounded-[32px] px-8 py-10 text-center">
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-[var(--accent-strong)] border-t-transparent" />
+          <p className="text-sm text-[var(--app-muted)]">Setting up exam...</p>
         </div>
       </div>
     );
@@ -1372,11 +1417,11 @@ const ExamInterface = () => {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-950">
-        <div className="text-center">
-          <FiAlertTriangle className="text-red-400 text-4xl mx-auto mb-4" />
-          <p className="text-white font-semibold mb-2">Failed to load exam</p>
-          <p className="text-gray-500 text-sm mb-4">{error}</p>
+      <div className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-6" style={{ backgroundImage: "var(--app-gradient)" }}>
+        <div className="theme-panel max-w-md rounded-[32px] px-8 py-10 text-center">
+          <FiAlertTriangle className="mx-auto mb-4 text-4xl text-red-300" />
+          <p className="mb-2 text-lg font-semibold text-[var(--app-text)]">Failed to load exam</p>
+          <p className="mb-5 text-sm text-[var(--app-muted)]">{error}</p>
           <button onClick={() => navigate("/student/dashboard")} className="text-purple-400 text-sm">
             ← Back to dashboard
           </button>
@@ -1388,119 +1433,82 @@ const ExamInterface = () => {
   // ── ready screen (before exam starts) ──────────────────────
   if (!examReady) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center p-6">
+      <div className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-4 py-5 sm:px-6 lg:px-8" style={{ backgroundImage: "var(--app-gradient)" }}>
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="bg-gray-900 border border-gray-800 rounded-2xl p-8 max-w-md w-full text-center"
+          className="theme-panel mx-auto w-full max-w-5xl rounded-[30px] p-4 sm:p-5"
         >
-          <div className="w-16 h-16 bg-purple-600/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <FiShield className="text-purple-400 text-3xl" />
-          </div>
-          <h2 className="text-white text-xl font-bold mb-2">{exam?.title}</h2>
-          <p className="text-gray-500 text-sm mb-6">{exam?.subject}</p>
-
-          <div className="bg-gray-800 rounded-xl p-4 mb-6 text-left space-y-2">
-            <p className="text-gray-400 text-sm">Questions: {exam?.questions.length}</p>
-            <p className="text-gray-400 text-sm">Duration: {exam?.duration} minutes</p>
-            <p className="text-gray-400 text-sm">Webcam monitoring enabled</p>
-            <p className="text-gray-400 text-sm">Fullscreen mode required</p>
-            <p className="text-gray-400 text-sm">AI monitoring active</p>
-          </div>
-
-          <div className="mb-5">
-            <WebcamMonitor
-              onAlert={handleWebcamAlert}
-              videoRef={webcamVideoRef}
-              streamRef={webcamStreamRef}
-            />
-          </div>
-
-          <div className="bg-gray-800 rounded-xl p-4 mb-6 text-left space-y-3 border border-gray-700">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-white text-sm font-semibold">Face Verification</p>
-              <span className={`text-[11px] px-2 py-1 rounded-full ${
-                identityStatus === "verified" || identityStatus === "ready"
-                  ? "bg-green-500/15 text-green-400"
-                  : identityStatus === "mismatch" || identityStatus === "invalid_reference"
-                  ? "bg-red-500/15 text-red-400"
-                  : "bg-yellow-500/15 text-yellow-400"
-              }`}>
-                {identityStatus === "verified"
-                  ? "Verified"
-                  : identityStatus === "ready"
-                  ? "Ready"
-                  : identityStatus === "mismatch"
-                  ? "Mismatch"
-                  : identityStatus === "service_unavailable"
-                  ? "Service unavailable"
-                  : identityStatus === "microphone_denied"
-                  ? "Mic needed"
-                  : identityStatus === "missing"
-                  ? "Reference missing"
-                  : identityStatus === "enrolling"
-                  ? "Saving reference"
-                  : identityStatus === "verifying"
-                  ? "Verifying"
-                  : identityStatus === "starting"
-                  ? "Starting exam"
-                  : identityStatus === "fullscreen_required"
-                  ? "Fullscreen needed"
-                  : "Pending"}
-              </span>
-            </div>
-            <p className="text-gray-400 text-xs leading-relaxed">{identityMessage}</p>
-            <div className={`rounded-lg border px-3 py-2 text-[11px] ${
-              baselineCalibrationInfo.status === "ready"
-                ? "border-green-500/20 bg-green-500/10 text-green-200"
-                : "border-amber-500/20 bg-amber-500/10 text-amber-200"
-            }`}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-semibold tracking-wide">Head Pose Baseline</span>
-                <span className="opacity-80">
-                  {baselineCalibrationInfo.status === "ready"
-                    ? "Ready"
-                    : baselineCalibrationInfo.status === "calibrating"
-                    ? "Calibrating"
-                    : baselineCalibrationInfo.status === "retrying"
-                    ? "Retrying"
-                    : "Pending"}
-                </span>
-                </div>
-                <p className="mt-1 leading-relaxed opacity-90">{baselineCalibrationMessage}</p>
-                {baselineDebugSummary && (
-                  <p className="mt-1 opacity-75">{baselineDebugSummary}</p>
-                )}
-                {baselineValueSummary && (
-                  <p className="mt-1 font-mono opacity-75">{baselineValueSummary}</p>
-                )}
-            </div>
-            {!referenceFace && (
-              <button
-                type="button"
-                onClick={() => { void saveReferenceFace(); }}
-                disabled={identityBusy}
-                className="w-full bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,540px)_minmax(360px,460px)] lg:justify-center lg:items-center">
+            <div className="mx-auto w-full max-w-[540px] space-y-3">
+              <div
+                className="rounded-[26px] border p-2.5"
+                style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}
               >
-                Set Up Face Verification
-              </button>
-            )}
-          </div>
-          <p className="text-yellow-400 text-xs mb-6">
-            Do not switch tabs or exit fullscreen during the exam
-          </p>
+                <WebcamMonitor
+                  onAlert={handleWebcamAlert}
+                  videoRef={webcamVideoRef}
+                  streamRef={webcamStreamRef}
+                />
+              </div>
+              <div className="rounded-[20px] border border-amber-500/20 bg-amber-500/8 px-4 py-2.5 text-xs text-amber-200">
+                Keep your face centered and stay still for a few seconds during verification.
+              </div>
+            </div>
 
-          <motion.button
-            whileTap={{ scale: 0.98 }}
-            onClick={handleBeginExam}
-            disabled={identityBusy}
-            className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl transition-colors flex items-center justify-center gap-2"
-          >
-            {identityBusy
-              ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              : <FiCheckCircle />}
-            {startActionLabel}
-          </motion.button>
+            <div className="mx-auto w-full max-w-[460px] space-y-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--accent-strong)]">Secure Exam Check</p>
+                <h2 className="mt-1 text-[1.75rem] font-semibold tracking-tight text-[var(--app-text)]">{exam?.title}</h2>
+                <p className="mt-0.5 text-sm text-[var(--app-muted)]">{exam?.subject}</p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-[22px] border px-4 py-3" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-subtle)]">Questions</p>
+                  <p className="mt-1 text-[1.55rem] font-semibold text-[var(--app-text)]">{exam?.questions.length}</p>
+                </div>
+                <div className="rounded-[22px] border px-4 py-3" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-subtle)]">Duration</p>
+                  <p className="mt-1 text-[1.55rem] font-semibold text-[var(--app-text)]">{exam?.duration}m</p>
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border p-4 text-left" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold text-[var(--app-text)]">Identity & Baseline Check</p>
+                  <StatusBadge tone={getIdentityTone(identityStatus)}>{getIdentityLabel(identityStatus)}</StatusBadge>
+                </div>
+                <p className="mt-2.5 text-sm leading-relaxed text-[var(--app-muted)]">{identityMessage}</p>
+                {!referenceFace && (
+                  <button
+                    type="button"
+                    onClick={() => { void saveReferenceFace(); }}
+                    disabled={identityBusy}
+                    className="theme-secondary-btn mt-3 w-full rounded-2xl py-2.5 text-sm font-medium disabled:opacity-50"
+                  >
+                    Set Up Face Verification
+                  </button>
+                )}
+              </div>
+
+              <p className="text-xs text-amber-200">
+                Do not switch tabs or exit fullscreen during the exam.
+              </p>
+
+              <motion.button
+                whileTap={{ scale: 0.98 }}
+                onClick={handleBeginExam}
+                disabled={identityBusy}
+                className="theme-primary-btn flex w-full items-center justify-center gap-2 rounded-2xl py-3 font-semibold disabled:opacity-50"
+              >
+                {identityBusy
+                  ? <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  : <FiCheckCircle />}
+                {startActionLabel}
+              </motion.button>
+            </div>
+          </div>
         </motion.div>
       </div>
     );
@@ -1509,23 +1517,23 @@ const ExamInterface = () => {
   // ── result screen ───────────────────────────────────────────
   if (submitted && result) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center p-6">
+      <div className="min-h-screen bg-[var(--app-bg)] px-4 py-6 sm:px-6 lg:px-8" style={{ backgroundImage: "var(--app-gradient)" }}>
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="bg-gray-900 border border-gray-800 rounded-2xl p-8 max-w-md w-full text-center"
+          className="theme-panel mx-auto w-full max-w-xl rounded-[32px] p-8 text-center"
         >
-          <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 ${
-            result.passed ? "bg-green-500/20" : "bg-red-500/20"
+          <div className={`mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full ${
+            result.passed ? "bg-emerald-500/12" : "bg-red-500/12"
           }`}>
             {result.passed
-              ? <FiCheckCircle className="text-green-400 text-4xl" />
-              : <FiAlertTriangle className="text-red-400 text-4xl" />}
+              ? <FiCheckCircle className="text-4xl text-emerald-300" />
+              : <FiAlertTriangle className="text-4xl text-red-300" />}
           </div>
-          <h2 className="text-white text-2xl font-bold mb-1">
+          <h2 className="mb-1 text-2xl font-bold text-[var(--app-text)]">
             {result.passed ? "Congratulations! 🎉" : "Better luck next time"}
           </h2>
-          <p className={`text-lg font-semibold mb-6 ${result.passed ? "text-green-400" : "text-red-400"}`}>
+          <p className={`mb-6 text-lg font-semibold ${result.passed ? "text-emerald-300" : "text-red-300"}`}>
             {result.passed ? "PASSED" : "FAILED"}
           </p>
           <div className="grid grid-cols-3 gap-4 mb-8">
@@ -1534,19 +1542,19 @@ const ExamInterface = () => {
               { label: "Percentage", value: `${result.percentage}%` },
               { label: "Total Qs", value: result.totalQuestions },
             ].map(({ label, value }) => (
-              <div key={label} className="bg-gray-800 rounded-xl p-4">
-                <p className="text-white text-2xl font-bold">{value}</p>
-                <p className="text-gray-500 text-xs mt-1">{label}</p>
+              <div key={label} className="rounded-[24px] p-4" style={{ background: "var(--panel-strong)" }}>
+                <p className="text-2xl font-bold text-[var(--app-text)]">{value}</p>
+                <p className="mt-1 text-xs text-[var(--app-muted)]">{label}</p>
               </div>
             ))}
           </div>
           <div className="flex gap-3">
             <button onClick={() => navigate("/student/results")}
-              className="flex-1 bg-purple-600 hover:bg-purple-500 text-white font-medium py-3 rounded-lg transition-colors text-sm">
+              className="theme-primary-btn flex-1 rounded-2xl py-3 text-sm font-medium">
               View Results
             </button>
             <button onClick={() => navigate("/student/dashboard")}
-              className="flex-1 bg-gray-800 hover:bg-gray-700 text-white font-medium py-3 rounded-lg transition-colors text-sm">
+              className="theme-secondary-btn flex-1 rounded-2xl py-3 text-sm font-medium">
               Dashboard
             </button>
           </div>
@@ -1558,15 +1566,24 @@ const ExamInterface = () => {
   const question = exam?.questions[currentQ];
   const totalAnswered = Object.keys(answers).length;
   const totalQuestions = exam?.questions.length || 0;
+  const progressPercentage = totalQuestions > 0 ? ((currentQ + 1) / totalQuestions) * 100 : 0;
 
   // ── main exam UI ────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gray-950">
+    <div className="min-h-screen bg-[var(--app-bg)]" style={{ backgroundImage: "var(--app-gradient)" }}>
       {/* topbar */}
-      <div className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center justify-between sticky top-0 z-10">
+      <div
+        className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b px-4 py-3 sm:px-6"
+        style={{
+          background: "rgba(8, 18, 33, 0.86)",
+          borderColor: "var(--app-border)",
+          backdropFilter: "blur(24px)",
+        }}
+      >
         <div>
-          <h1 className="text-white font-semibold text-sm">{exam?.title}</h1>
-          <p className="text-gray-500 text-xs">{exam?.subject}</p>
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-subtle)]">Exam in Progress</p>
+          <h1 className="mt-1 text-sm font-semibold text-[var(--app-text)]">{exam?.title}</h1>
+          <p className="text-xs text-[var(--app-muted)]">{exam?.subject}</p>
         </div>
         <div className="flex items-center gap-3">
           {exam && (
@@ -1580,17 +1597,19 @@ const ExamInterface = () => {
         </div>
       </div>
 
-      <div className="flex h-[calc(100vh-57px)]">
+      <div className="mx-auto flex min-h-[calc(100vh-73px)] max-w-[1600px] flex-col gap-4 p-4 sm:p-6 lg:flex-row">
         {/* left - questions */}
-        <div className="flex-1 overflow-auto p-6">
+        <div className="theme-panel theme-scrollbar flex-1 overflow-auto rounded-[32px] p-5 sm:p-6">
           <div className="mb-6">
-            <div className="flex justify-between text-xs text-gray-500 mb-2">
+            <div className="mb-2 flex justify-between text-xs text-[var(--app-muted)]">
               <span>Question {currentQ + 1} of {totalQuestions}</span>
               <span>{totalAnswered}/{totalQuestions} answered</span>
             </div>
-            <div className="w-full bg-gray-800 rounded-full h-1.5">
-              <div className="bg-purple-600 h-1.5 rounded-full transition-all duration-300"
-                style={{ width: `${((currentQ + 1) / totalQuestions) * 100}%` }} />
+            <div className="h-1.5 w-full rounded-full bg-[var(--panel-strong)]">
+              <div
+                className="h-1.5 rounded-full transition-all duration-300"
+                style={{ width: `${progressPercentage}%`, background: "var(--accent-strong)" }}
+              />
             </div>
           </div>
 
@@ -1600,25 +1619,29 @@ const ExamInterface = () => {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
               transition={{ duration: 0.2 }}
-              className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6"
+              className="mb-6 rounded-[28px] border p-6"
+              style={{ background: "var(--panel-strong)", borderColor: "var(--app-border)" }}
             >
-              <p className="text-gray-400 text-xs font-medium uppercase tracking-wider mb-3">
+              <p className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-muted)]">
                 Question {currentQ + 1}
               </p>
-              <p className="text-white text-base font-medium leading-relaxed mb-6">
+              <p className="mb-6 text-base font-medium leading-relaxed text-[var(--app-text)] sm:text-lg">
                 {question?.question}
               </p>
               <div className="space-y-3">
                 {question?.options.map((option, i) => (
                   <button key={i} onClick={() => handleAnswerSelection(currentQ, i)}
-                    className={`w-full text-left px-4 py-3.5 rounded-xl border text-sm transition-all duration-200 ${
+                    className={`w-full rounded-[22px] border px-4 py-3.5 text-left text-sm transition-all duration-200 ${
                       answers[currentQ] === i
-                        ? "bg-purple-600/20 border-purple-500 text-white"
-                        : "bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600 hover:text-white"
+                        ? "border-sky-400/40 bg-sky-500/12 text-[var(--app-text)]"
+                        : "text-[var(--app-muted)] hover:text-[var(--app-text)]"
                     }`}
+                    style={answers[currentQ] === i
+                      ? undefined
+                      : { background: "var(--panel-bg)", borderColor: "var(--app-border)" }}
                   >
-                    <span className={`inline-flex w-6 h-6 rounded-full items-center justify-center text-xs font-bold mr-3 ${
-                      answers[currentQ] === i ? "bg-purple-600 text-white" : "bg-gray-700 text-gray-400"
+                    <span className={`mr-3 inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${
+                      answers[currentQ] === i ? "bg-sky-500 text-white" : "bg-[var(--panel-strong)] text-[var(--app-subtle)]"
                     }`}>
                       {String.fromCharCode(65 + i)}
                     </span>
@@ -1629,22 +1652,28 @@ const ExamInterface = () => {
             </motion.div>
           </AnimatePresence>
 
-          <div className="flex items-center justify-between">
+          {submissionError && (
+            <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+              {submissionError}
+            </div>
+          )}
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <button onClick={() => updateCurrentQuestion(Math.max(0, currentQ - 1))}
               disabled={currentQ === 0}
-              className="flex items-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm rounded-lg transition-colors">
+              className="theme-secondary-btn flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-30">
               <FiChevronLeft /> Previous
             </button>
             {currentQ < totalQuestions - 1 ? (
               <button onClick={() => updateCurrentQuestion(Math.min(totalQuestions - 1, currentQ + 1))}
-                className="flex items-center gap-2 px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white text-sm rounded-lg transition-colors">
+                className="theme-primary-btn flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm">
                 Next <FiChevronRight />
               </button>
             ) : (
               <button onClick={handleSubmit} disabled={submitting}
-                className="flex items-center gap-2 px-6 py-2.5 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors">
+                className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-6 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:opacity-50">
                 {submitting
-                  ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ? <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-950/30 border-t-slate-950" />
                   : <FiCheckCircle />}
                 Submit Exam
               </button>
@@ -1653,10 +1682,9 @@ const ExamInterface = () => {
         </div>
 
         {/* right sidebar */}
-        <div className="w-72 border-l border-gray-800 p-4 flex flex-col gap-3 overflow-hidden"
-          style={{ height: "calc(100vh - 57px)" }}>
-          <div className="rounded-2xl border border-gray-800 bg-gray-900 p-3">
-            <p className="text-gray-500 text-[11px] font-medium uppercase tracking-wider mb-2">
+        <div className="theme-panel theme-scrollbar flex w-full flex-col gap-3 overflow-hidden rounded-[32px] p-4 lg:w-[340px] lg:sticky lg:top-[89px] lg:max-h-[calc(100vh-105px)]">
+          <div className="rounded-[28px] border p-3" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
+            <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-muted)]">
               Proctor Monitor
             </p>
             <WebcamMonitor
@@ -1666,6 +1694,7 @@ const ExamInterface = () => {
             />
             <AudioMonitor
               enabled={examReady && !submitted}
+              showStatus={SHOW_STUDENT_DEBUG_UI}
               onAudioDetected={(analysis) => {
                 incrementAudioDetected();
                 const rawConfidence = typeof analysis?.raw_backend_speech_confidence === "number"
@@ -1695,34 +1724,9 @@ const ExamInterface = () => {
                 );
               }}
             />
-            <div className={`mt-3 rounded-xl border px-2.5 py-2 text-[11px] ${
-              baselineCalibrationInfo.status === "ready"
-                ? "border-green-500/25 bg-green-500/10 text-green-200"
-                : "border-amber-500/25 bg-amber-500/10 text-amber-200"
-            }`}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-semibold tracking-wide">Head Pose Baseline</span>
-                <span className="text-[10px] opacity-75">
-                  {baselineCalibrationInfo.status === "ready"
-                    ? "Ready"
-                    : baselineCalibrationInfo.status === "calibrating"
-                    ? "Calibrating"
-                    : baselineCalibrationInfo.status === "retrying"
-                    ? "Retrying"
-                    : "Pending"}
-                </span>
-                </div>
-                <p className="mt-1 leading-relaxed opacity-85">{baselineCalibrationMessage}</p>
-                {baselineDebugSummary && (
-                  <p className="mt-1 opacity-75">{baselineDebugSummary}</p>
-                )}
-                {baselineValueSummary && (
-                  <p className="mt-1 font-mono opacity-75">{baselineValueSummary}</p>
-                )}
-            </div>
-            {mlFramePreview && (
-              <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-2">
-                <div className="flex items-center justify-between gap-2 mb-2">
+            {SHOW_STUDENT_ML_PREVIEW && mlFramePreview && (
+              <div className="mt-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-200">
                     ML Frame Preview
                   </p>
@@ -1733,25 +1737,20 @@ const ExamInterface = () => {
                 <img
                   src={mlFramePreview}
                   alt="Frame sent to ML"
-                  className="w-full aspect-video rounded-lg border border-cyan-500/20 object-cover bg-gray-900"
+                  className="aspect-video w-full rounded-xl border border-cyan-500/20 object-cover"
+                  style={{ background: "var(--panel-bg)" }}
                 />
                 <p className="mt-2 text-[10px] leading-relaxed text-cyan-100/70">
                   This is the compressed frame payload currently being posted to the ML endpoints.
                 </p>
               </div>
             )}
-            {liveAlerts.length > 0 && (
+            {SHOW_STUDENT_DEBUG_UI && liveAlerts.length > 0 && (
               <div className="mt-3 space-y-2">
                 {liveAlerts.map((alert) => (
                   <div
                     key={alert.id}
-                    className={`rounded-xl border px-2.5 py-2 text-[11px] ${
-                      alert.severity === "high"
-                        ? "border-red-500/30 bg-red-500/10 text-red-300"
-                        : alert.severity === "medium"
-                        ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
-                        : "border-sky-500/30 bg-sky-500/10 text-sky-200"
-                    }`}
+                    className={`rounded-2xl border px-3 py-3 text-[11px] ${getSeverityClassName(alert.severity)}`}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-semibold tracking-wide">
@@ -1772,25 +1771,31 @@ const ExamInterface = () => {
             )}
           </div>
 
-          <div>
-            <p className="text-gray-500 text-xs font-medium uppercase tracking-wider mb-2">Questions</p>
+          <div className="rounded-[28px] border p-4" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-muted)]">Questions</p>
             <div className="grid grid-cols-5 gap-1.5">
               {exam?.questions.map((_, i) => (
-                <button key={i} onClick={() => updateCurrentQuestion(i)}
-                  className={`h-8 rounded-lg text-xs font-medium transition-colors ${
-                    i === currentQ ? "bg-purple-600 text-white"
-                    : answers[i] !== undefined ? "bg-green-500/20 text-green-400 border border-green-500/30"
-                    : "bg-gray-800 text-gray-400 hover:bg-gray-700"
-                  }`}>
+                <button
+                  key={i}
+                  onClick={() => updateCurrentQuestion(i)}
+                  type="button"
+                  aria-label={`Question ${i + 1}`}
+                  className={`h-9 rounded-xl text-xs font-medium transition-colors ${
+                    i === currentQ ? "bg-sky-500 text-white"
+                    : answers[i] !== undefined ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    : "text-[var(--app-muted)] hover:bg-[var(--panel-bg)]"
+                  }`}
+                  style={i === currentQ || answers[i] !== undefined ? undefined : { background: "var(--panel-soft)" }}
+                >
                   {i + 1}
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="mt-auto pt-4">
+          <div className="mt-auto pt-2">
             <button onClick={handleSubmit} disabled={submitting}
-              className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-sm font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:opacity-50">
               <FiCheckCircle /> Submit Exam
             </button>
           </div>
