@@ -4,7 +4,6 @@ import numpy as np
 import cv2
 import os
 import sys
-from openvino.runtime import Core
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.frame_utils import base64_to_frame
@@ -38,6 +37,7 @@ DELTA_DOWNWARD_ANGLE_THRESHOLD = 6.5
 DOWNWARD_PITCH_SUPPORT_THRESHOLD = 7.0
 
 _pipelines = None
+_Core = None
 
 
 class GazeBaseline(BaseModel):
@@ -48,6 +48,17 @@ class GazeBaseline(BaseModel):
 class FrameRequest(BaseModel):
     frame: str
     baseline: GazeBaseline | None = None
+
+
+def get_openvino_core():
+    global _Core
+
+    if _Core is None:
+        from openvino.runtime import Core
+
+        _Core = Core
+
+    return _Core
 
 
 def _model_path(model_name: str) -> str:
@@ -138,7 +149,7 @@ def get_pipelines():
         if missing:
             raise RuntimeError(f"OpenVINO gaze model files not found: {missing}")
 
-        core = Core()
+        core = get_openvino_core()()
         _pipelines = {
             "face": core.compile_model(required["face"], "CPU"),
             "landmarks": core.compile_model(required["landmarks"], "CPU"),

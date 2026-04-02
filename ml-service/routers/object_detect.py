@@ -1,6 +1,5 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from ultralytics import YOLO
 import sys
 import os
 
@@ -10,6 +9,18 @@ from utils.frame_utils import base64_to_frame
 router = APIRouter()
 
 model = None
+_YOLO = None
+
+
+def get_yolo_class():
+    global _YOLO
+
+    if _YOLO is None:
+        from ultralytics import YOLO
+
+        _YOLO = YOLO
+
+    return _YOLO
 
 def get_model():
     global model
@@ -20,7 +31,7 @@ def get_model():
         )
         if not os.path.exists(model_path):
             raise RuntimeError(f"YOLO model not found at '{model_path}'")
-        model = YOLO(model_path)
+        model = get_yolo_class()(model_path)
     return model
 
 MODEL_RETURN_CONFIDENCE = 0.08

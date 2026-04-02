@@ -6,15 +6,14 @@ import sys
 import os
 import time
 from threading import Lock
-import mediapipe as mp
-from mediapipe.tasks.python import vision
-from mediapipe.tasks.python.core.base_options import BaseOptions
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.frame_utils import base64_to_frame
 
 router = APIRouter()
 _image_face_landmarker = None
+_vision = None
+_BaseOptions = None
 _model_path = os.getenv(
     "MEDIAPIPE_FACE_LANDMARKER_MODEL",
     os.path.join(
@@ -75,8 +74,22 @@ class FrameRequest(BaseModel):
     tracker_id: str | None = None
 
 
+def get_mediapipe_tasks():
+    global _vision, _BaseOptions
+
+    if _vision is None or _BaseOptions is None:
+        from mediapipe.tasks.python import vision
+        from mediapipe.tasks.python.core.base_options import BaseOptions
+
+        _vision = vision
+        _BaseOptions = BaseOptions
+
+    return _vision, _BaseOptions
+
+
 def get_face_landmarker():
     global _image_face_landmarker
+    vision, _ = get_mediapipe_tasks()
 
     if _image_face_landmarker is None:
         _image_face_landmarker = vision.FaceLandmarker.create_from_options(
@@ -87,6 +100,8 @@ def get_face_landmarker():
 
 
 def _build_landmarker_options(running_mode):
+    vision, BaseOptions = get_mediapipe_tasks()
+
     if not os.path.exists(_model_path):
         raise RuntimeError(
             f"MediaPipe face landmarker model not found at '{_model_path}'"

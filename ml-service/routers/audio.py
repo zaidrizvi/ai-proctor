@@ -1,8 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from utils.audio_utils import analyze_audio_chunk, decode_wav_base64
-
 router = APIRouter()
 
 
@@ -12,6 +10,8 @@ class AudioRequest(BaseModel):
 
 @router.post("/analyze")
 async def analyze_audio(req: AudioRequest):
+    from utils.audio_utils import analyze_audio_chunk, decode_wav_base64
+
     try:
         samples, sample_rate = decode_wav_base64(req.audio)
     except ValueError as exc:

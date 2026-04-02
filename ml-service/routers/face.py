@@ -1,6 +1,5 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from deepface import DeepFace
 import sys
 import os
 from typing import List, Optional
@@ -10,6 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.frame_utils import base64_to_frame
 
 router = APIRouter()
+_DeepFace = None
 
 FACE_CONFIDENCE_THRESHOLD = 0.5
 FACE_PRESENCE_CONFIDENCE_THRESHOLD = 0.38
@@ -43,6 +43,17 @@ class VerifyRequest(BaseModel):
     reference_embedding: Optional[List[float]] = None
 
 
+def get_deepface():
+    global _DeepFace
+
+    if _DeepFace is None:
+        from deepface import DeepFace
+
+        _DeepFace = DeepFace
+
+    return _DeepFace
+
+
 def extract_confident_faces(frame, backends=DETECTION_BACKENDS, min_confidence=FACE_CONFIDENCE_THRESHOLD):
     best_faces = []
     best_backend = None
@@ -53,7 +64,7 @@ def extract_confident_faces(frame, backends=DETECTION_BACKENDS, min_confidence=F
 
     for backend in backends:
         try:
-            faces = DeepFace.extract_faces(
+            faces = get_deepface().extract_faces(
                 img_path=frame,
                 detector_backend=backend,
                 enforce_detection=False,
@@ -91,7 +102,7 @@ def extract_confident_faces(frame, backends=DETECTION_BACKENDS, min_confidence=F
 def build_face_embedding(face):
     # DeepFace.extract_faces returns RGB; convert back to BGR for represent().
     face_bgr = face[:, :, ::-1]
-    embedding_obj = DeepFace.represent(
+    embedding_obj = get_deepface().represent(
         img_path=face_bgr,
         model_name=VERIFICATION_MODEL,
         detector_backend="skip",
