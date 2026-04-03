@@ -10,3 +10,6 @@ build/
 backend/.env
 frontend/.env
 ml-services/.env
+ml-service/.env
+ml-service/__pycache__/
+ml-service/*.log

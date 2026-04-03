@@ -8,5 +8,6 @@ pillow
 python-multipart
 ultralytics
 tf-keras
+openvino
 python-dotenv
 silero-vad
