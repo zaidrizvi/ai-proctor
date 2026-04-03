@@ -9,3 +9,4 @@ build/
 .env
 backend/.env
 frontend/.env
+ml-services/.env
