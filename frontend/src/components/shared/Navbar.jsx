@@ -42,12 +42,11 @@ const Navbar = ({
   return (
     <header className="sticky top-0 z-30 px-3 pt-3 sm:px-5 lg:px-5">
       <nav
-        className="mx-auto flex items-center justify-between gap-3 rounded-[24px] border px-4 py-2.5 sm:px-5"
+        className="mx-auto flex items-center justify-between gap-3 rounded-[24px] border px-4 py-2.5 backdrop-blur-none sm:px-5 sm:backdrop-blur-2xl"
         style={{
           background: "var(--shell-topbar)",
           borderColor: "var(--app-border)",
           boxShadow: "var(--panel-shadow)",
-          backdropFilter: "blur(24px)",
         }}
       >
         <div className="flex min-w-0 items-center gap-3">
