@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import sys
 import os
+import traceback
 from typing import List, Optional
 import numpy as np
 
@@ -412,6 +413,7 @@ async def detect_face(req: FrameRequest):
     except HTTPException:
         raise
     except Exception as exc:
+        traceback.print_exc()
         raise HTTPException(
             status_code=503,
             detail=f"Face detection unavailable: {exc}",

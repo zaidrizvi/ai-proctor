@@ -5,6 +5,7 @@ import cv2
 import sys
 import os
 import time
+import traceback
 from threading import Lock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -12,6 +13,7 @@ from utils.frame_utils import base64_to_frame
 
 router = APIRouter()
 _image_face_landmarker = None
+_mp = None
 _vision = None
 _BaseOptions = None
 _model_path = os.getenv(
@@ -75,21 +77,23 @@ class FrameRequest(BaseModel):
 
 
 def get_mediapipe_tasks():
-    global _vision, _BaseOptions
+    global _mp, _vision, _BaseOptions
 
-    if _vision is None or _BaseOptions is None:
+    if _mp is None or _vision is None or _BaseOptions is None:
+        import mediapipe as mp
         from mediapipe.tasks.python import vision
         from mediapipe.tasks.python.core.base_options import BaseOptions
 
+        _mp = mp
         _vision = vision
         _BaseOptions = BaseOptions
 
-    return _vision, _BaseOptions
+    return _mp, _vision, _BaseOptions
 
 
 def get_face_landmarker():
     global _image_face_landmarker
-    vision, _ = get_mediapipe_tasks()
+    _, vision, _ = get_mediapipe_tasks()
 
     if _image_face_landmarker is None:
         _image_face_landmarker = vision.FaceLandmarker.create_from_options(
@@ -100,7 +104,7 @@ def get_face_landmarker():
 
 
 def _build_landmarker_options(running_mode):
-    vision, BaseOptions = get_mediapipe_tasks()
+    _, vision, BaseOptions = get_mediapipe_tasks()
 
     if not os.path.exists(_model_path):
         raise RuntimeError(
@@ -120,6 +124,8 @@ def _build_landmarker_options(running_mode):
 
 
 def _create_video_face_landmarker():
+    _, vision, _ = get_mediapipe_tasks()
+
     return vision.FaceLandmarker.create_from_options(
         _build_landmarker_options(vision.RunningMode.VIDEO)
     )
@@ -265,6 +271,7 @@ def _pose_motion_score(previous_pose: dict, pose: dict) -> float:
 
 
 def _detect_landmarks(frame: np.ndarray, tracker_id: str | None):
+    mp, _, _ = get_mediapipe_tasks()
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
     tracker_state = _get_tracker_state(tracker_id)
@@ -674,6 +681,7 @@ async def analyze_head_pose(req: FrameRequest):
     except HTTPException:
         raise
     except Exception as exc:
+        traceback.print_exc()
         raise HTTPException(
             status_code=503,
             detail=f"Head pose tracking unavailable: {exc}",

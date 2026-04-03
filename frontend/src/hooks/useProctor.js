@@ -5,6 +5,7 @@ const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 const NO_FACE_STREAK_TO_ALERT = 2;
 const FACE_RECOVERY_STREAK = 2;
 const MULTIPLE_FACES_STREAK_TO_ALERT = 2;
+const OBJECT_MULTIPLE_FACES_STREAK_TO_ALERT = 3;
 const PRESENCE_MULTIPLE_FACES_CONFIRM_STREAK = 2;
 const HEAD_TURN_STREAK_TO_ALERT = 2;
 const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
@@ -210,6 +211,9 @@ const useProctor = ({
     const sourceState = multipleFacesSourcesRef.current[source];
     const pulseIntervalMs = getMultipleFacesSourcePulseIntervalMs(source);
     const isNewPulse = now - sourceState.lastPulseAt >= pulseIntervalMs;
+    const alertThreshold = source === "object"
+      ? OBJECT_MULTIPLE_FACES_STREAK_TO_ALERT
+      : MULTIPLE_FACES_STREAK_TO_ALERT;
 
     sourceState.lastPositiveAt = now;
 
@@ -217,14 +221,14 @@ const useProctor = ({
       sourceState.lastPulseAt = now;
       streaksRef.current.multipleFaces = Math.min(
         streaksRef.current.multipleFaces + 1,
-        MULTIPLE_FACES_STREAK_TO_ALERT + 2
+        alertThreshold + 2
       );
     }
 
     activeFlagsRef.current.multipleFaces = true;
 
     if (
-      streaksRef.current.multipleFaces >= MULTIPLE_FACES_STREAK_TO_ALERT &&
+      streaksRef.current.multipleFaces >= alertThreshold &&
       now - lastAlertAtRef.current.multipleFaces >= MULTIPLE_FACES_ALERT_COOLDOWN_MS
     ) {
       lastAlertAtRef.current.multipleFaces = now;
