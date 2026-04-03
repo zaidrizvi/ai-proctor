@@ -7,7 +7,7 @@ sdk: docker
 app_port: 7860
 suggested_hardware: cpu-basic
 startup_duration_timeout: 1h
-short_description: FastAPI-based ML service for AIProctor face, gaze, head pose, object, and audio analysis.
+short_description: AIProctor ML API for face, gaze, object, and audio checks.
 ---
 
 # AIProctor ML Service
