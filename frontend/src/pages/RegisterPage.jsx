@@ -14,11 +14,13 @@ const HIGH_QUALITY_VIDEO_CONSTRAINTS = {
   height: { ideal: 720, min: 480 },
   facingMode: "user",
 };
+const RETRYABLE_ML_STATUS_CODES = new Set([502, 503, 504]);
 
 const RegisterPage = () => {
   const [form, setForm] = useState({ name: "", email: "", password: "", batchCode: "" });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [capturingFace, setCapturingFace] = useState(false);
   const [error, setError] = useState("");
   const [faceImage, setFaceImage] = useState("");
   const [cameraStatus, setCameraStatus] = useState("idle");
@@ -93,21 +95,67 @@ const RegisterPage = () => {
     return canvas.toDataURL("image/jpeg", 0.95);
   };
 
+  const wait = (ms) => new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+
+  const getFaceDetectionErrorMessage = (err) => {
+    const status = Number(err?.response?.status || 0);
+    const detail = err?.response?.data?.detail;
+
+    if (status === 400 && typeof detail === "string") {
+      return detail;
+    }
+
+    if (RETRYABLE_ML_STATUS_CODES.has(status)) {
+      return "Face detection service is waking up. Wait a moment and try again.";
+    }
+
+    if (typeof detail === "string" && detail.trim()) {
+      return detail;
+    }
+
+    if (!navigator.onLine) {
+      return "Internet connection looks offline. Reconnect and try again.";
+    }
+
+    return "Face detection is unavailable right now. Try again.";
+  };
+
+  const detectSingleFace = async (frame) => {
+    const mlUrl = getMlServiceUrl();
+
+    try {
+      return await axios.post(`${mlUrl}/face/detect`, { frame });
+    } catch (err) {
+      const status = Number(err?.response?.status || 0);
+      if (RETRYABLE_ML_STATUS_CODES.has(status)) {
+        await wait(1200);
+        return axios.post(`${mlUrl}/face/detect`, { frame });
+      }
+
+      throw err;
+    }
+  };
+
   const handleCaptureFace = async () => {
     setError("");
     const frame = captureCurrentFrame();
     if (!frame) return;
 
     try {
-      const { data } = await axios.post(`${getMlServiceUrl()}/face/detect`, { frame });
+      setCapturingFace(true);
+      const { data } = await detectSingleFace(frame);
       if (!data.face_detected || data.face_count !== 1 || data.multiple_faces) {
         setError("Capture a clear image with exactly one visible face.");
         return;
       }
 
       setFaceImage(frame);
-    } catch {
-      setError("Face detection is unavailable right now. Try again.");
+    } catch (err) {
+      setError(getFaceDetectionErrorMessage(err));
+    } finally {
+      setCapturingFace(false);
     }
   };
 
@@ -330,7 +378,7 @@ const RegisterPage = () => {
 
                 <div className="space-y-3">
                   {isStudent ? (
-                    <div className="rounded-[26px] border p-4" style={{ borderColor: "var(--app-border)", background: "linear-gradient(180deg, var(--panel-soft) 0%, var(--panel-strong) 100%)" }}>
+                    <div className="mx-auto w-full max-w-md rounded-[26px] border p-4 lg:max-w-none" style={{ borderColor: "var(--app-border)", background: "linear-gradient(180deg, var(--panel-soft) 0%, var(--panel-strong) 100%)" }}>
                       <div className="mb-3 flex items-start justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-[var(--app-text)]">Face Setup</p>
@@ -357,9 +405,9 @@ const RegisterPage = () => {
 
                       <div className="overflow-hidden rounded-[24px] border border-[var(--app-border)] bg-[var(--app-bg)]">
                         {faceImage ? (
-                          <img src={faceImage} alt="Captured reference face" className="h-52 w-full object-cover" />
+                          <img src={faceImage} alt="Captured reference face" className="h-64 w-full object-cover sm:h-72" />
                         ) : cameraStatus === "denied" ? (
-                          <div className="flex h-52 items-center justify-center px-6 text-center text-sm text-red-400">
+                          <div className="flex h-64 items-center justify-center px-6 text-center text-sm text-red-400 sm:h-72">
                             Camera access is required to capture the student face.
                           </div>
                         ) : (
@@ -368,24 +416,28 @@ const RegisterPage = () => {
                             autoPlay
                             muted
                             playsInline
-                            className="h-52 w-full object-cover"
+                            className="h-64 w-full object-cover sm:h-72"
                           />
                         )}
                       </div>
 
-                      <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)_96px] gap-3">
+                      <div className="mt-2.5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_96px]">
                         <button
                           type="button"
                           onClick={handleCaptureFace}
-                          disabled={loading || cameraStatus !== "ready"}
+                          disabled={loading || capturingFace || cameraStatus !== "ready"}
                           className="rounded-2xl border border-[var(--app-border)] bg-[var(--panel-bg)] py-2.5 text-sm font-medium text-[var(--app-text)] transition hover:bg-[var(--panel-soft)] disabled:opacity-50"
                         >
-                          {faceImage ? "Retake Face" : "Capture Face"}
+                          {capturingFace
+                            ? "Checking face..."
+                            : faceImage
+                            ? "Retake Face"
+                            : "Capture Face"}
                         </button>
                         <button
                           type="button"
                           onClick={() => setFaceImage("")}
-                          disabled={loading || !faceImage}
+                          disabled={loading || capturingFace || !faceImage}
                           className="rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm font-medium text-[var(--app-muted)] transition hover:bg-[var(--panel-soft)] disabled:opacity-50"
                         >
                           Clear
