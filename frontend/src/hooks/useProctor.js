@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback } from "react";
 import axios from "axios";
+import { getMlServiceUrl } from "../utils/mlService.js";
 
-const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 const NO_FACE_STREAK_TO_ALERT = 2;
 const FACE_RECOVERY_STREAK = 2;
 const MULTIPLE_FACES_STREAK_TO_ALERT = 2;
@@ -841,10 +841,11 @@ const useProctor = ({
       !objectAnalysisInFlightRef.current &&
       now - lastObjectCheckAtRef.current >= OBJECT_ANALYSIS_INTERVAL_MS
     ) {
+      const mlUrl = getMlServiceUrl();
       objectAnalysisInFlightRef.current = true;
       lastObjectCheckAtRef.current = now;
 
-      void axios.post(`${ML_URL}/objects/detect`, { frame })
+      void axios.post(`${mlUrl}/objects/detect`, { frame })
         .then((response) => {
           processObjectResult(response, token);
         })
@@ -889,8 +890,9 @@ const useProctor = ({
 
     verifyAnalysisInFlightRef.current = true;
     lastIdentityCheckRef.current = Date.now();
+    const mlUrl = getMlServiceUrl();
 
-    void axios.post(`${ML_URL}/face/verify`, {
+    void axios.post(`${mlUrl}/face/verify`, {
       frame,
       reference: referenceFace,
       reference_embedding: referenceFaceEmbedding,
@@ -983,12 +985,13 @@ const useProctor = ({
       activeFlagsRef.current.cameraFrameUnavailable = false;
       onMlFrame?.(frame);
       analysisCycleRef.current += 1;
+      const mlUrl = getMlServiceUrl();
 
       const criticalRequests = [
-        { key: "face", promise: axios.post(`${ML_URL}/face/detect`, { frame }) },
+        { key: "face", promise: axios.post(`${mlUrl}/face/detect`, { frame }) },
         {
           key: "head",
-          promise: axios.post(`${ML_URL}/head/analyze`, {
+          promise: axios.post(`${mlUrl}/head/analyze`, {
             frame,
             baseline: headPoseBaseline,
             tracker_id: sessionId || examId || "default",
@@ -996,7 +999,7 @@ const useProctor = ({
         },
         {
           key: "gaze",
-          promise: axios.post(`${ML_URL}/gaze/analyze`, {
+          promise: axios.post(`${mlUrl}/gaze/analyze`, {
             frame,
           }),
         },

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
+import { getMlServiceUrl } from "../../utils/mlService.js";
 
-const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 const ANALYSIS_INTERVAL_MS = 650;
 const MAX_ANALYSIS_WINDOW_MS = 950;
 const MAX_BUFFERED_AUDIO_MS = 1400;
@@ -214,7 +214,7 @@ const AudioMonitor = ({ onAudioDetected, enabled = true, showStatus = true }) =>
       try {
         const wavBytes = encodeWav(chunk, sampleRate);
         const audio = `data:audio/wav;base64,${uint8ToBase64(wavBytes)}`;
-        const { data } = await axios.post(`${ML_URL}/audio/analyze`, { audio });
+        const { data } = await axios.post(`${getMlServiceUrl()}/audio/analyze`, { audio });
 
         if (cancelled) return;
 

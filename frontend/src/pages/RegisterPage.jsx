@@ -6,9 +6,9 @@ import { FiEye, FiEyeOff, FiLock, FiMail, FiShield, FiUser } from "react-icons/f
 import Navbar from "../components/shared/Navbar.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import api from "../utils/api.js";
+import { getMlServiceUrl } from "../utils/mlService.js";
 
 void motion;
-const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 const HIGH_QUALITY_VIDEO_CONSTRAINTS = {
   width: { ideal: 1280, min: 640 },
   height: { ideal: 720, min: 480 },
@@ -99,7 +99,7 @@ const RegisterPage = () => {
     if (!frame) return;
 
     try {
-      const { data } = await axios.post(`${ML_URL}/face/detect`, { frame });
+      const { data } = await axios.post(`${getMlServiceUrl()}/face/detect`, { frame });
       if (!data.face_detected || data.face_count !== 1 || data.multiple_faces) {
         setError("Capture a clear image with exactly one visible face.");
         return;
@@ -133,7 +133,7 @@ const RegisterPage = () => {
 
       if (faceImage) {
         try {
-          const { data: embeddingData } = await axios.post(`${ML_URL}/face/reference-embedding`, {
+          const { data: embeddingData } = await axios.post(`${getMlServiceUrl()}/face/reference-embedding`, {
             frame: faceImage,
           });
 

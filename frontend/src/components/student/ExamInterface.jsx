@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import axios from "axios";
 import api from "../../utils/api.js";
 import { getTokenForPath } from "../../utils/authStorage.js";
+import { getMlServiceUrl } from "../../utils/mlService.js";
 import { useSocket } from "../../context/SocketContext.jsx";
 import useProctor from "../../hooks/useProctor.js";
 import AudioMonitor from "../proctor/AudioMonitor.jsx";
@@ -20,7 +21,6 @@ import {
 } from "react-icons/fi";
 
 void motion;
-const ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 const HIGH_QUALITY_VIDEO_CONSTRAINTS = {
   width: { ideal: 1280, min: 960 },
   height: { ideal: 720, min: 540 },
@@ -645,7 +645,7 @@ const ExamInterface = () => {
     setIdentityMessage("Checking the captured frame before saving it as the reference face...");
 
     try {
-      const { data: embeddingResult } = await axios.post(`${ML_URL}/face/reference-embedding`, {
+      const { data: embeddingResult } = await axios.post(`${getMlServiceUrl()}/face/reference-embedding`, {
         frame,
       });
 
@@ -744,7 +744,7 @@ const ExamInterface = () => {
     setIdentityMessage("Verifying your face against the saved reference...");
 
     try {
-      const { data } = await axios.post(`${ML_URL}/face/verify`, {
+      const { data } = await axios.post(`${getMlServiceUrl()}/face/verify`, {
         frame,
         reference: activeReference,
         reference_embedding: referenceFaceEmbedding,
@@ -835,7 +835,7 @@ const ExamInterface = () => {
       }
 
       try {
-        const { data: headData } = await axios.post(`${ML_URL}/head/analyze`, {
+        const { data: headData } = await axios.post(`${getMlServiceUrl()}/head/analyze`, {
           frame,
           tracker_id: session?._id || examId || "default",
         });
