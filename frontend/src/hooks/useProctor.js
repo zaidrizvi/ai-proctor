@@ -5,7 +5,7 @@ import { getMlServiceUrl } from "../utils/mlService.js";
 const NO_FACE_STREAK_TO_ALERT = 2;
 const FACE_RECOVERY_STREAK = 2;
 const MULTIPLE_FACES_STREAK_TO_ALERT = 2;
-const OBJECT_MULTIPLE_FACES_STREAK_TO_ALERT = 3;
+const OBJECT_MULTIPLE_FACES_STREAK_TO_ALERT = 2;
 const PRESENCE_MULTIPLE_FACES_CONFIRM_STREAK = 2;
 const HEAD_TURN_STREAK_TO_ALERT = 2;
 const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
@@ -773,7 +773,7 @@ const useProctor = ({
             token,
             "face_mismatch",
             "high",
-            "Identity compromised: an extra face kept appearing in the ongoing exam camera view"
+            "Identity continuity check failed because another person kept appearing in the ongoing exam camera view"
           );
         }
       }
@@ -801,7 +801,7 @@ const useProctor = ({
           token,
           "face_mismatch",
           "high",
-          "Identity compromised: multiple faces were visible in the ongoing exam camera view"
+          "Identity continuity check failed because another person was visible in the ongoing exam camera view"
         );
       }
 
