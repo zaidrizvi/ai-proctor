@@ -26,21 +26,20 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
         <button
           type="button"
           aria-label="Close menu overlay"
-          className="fixed inset-0 z-40 bg-black/35 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-black/35 backdrop-blur-none lg:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       <div className="relative z-10 flex min-h-screen">
         <aside
-          className={`fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r px-4 py-4 transition-transform duration-300 lg:static lg:translate-x-0 ${
+          className={`fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r px-4 py-4 transition-transform duration-300 backdrop-blur-none lg:static lg:translate-x-0 lg:backdrop-blur-xl ${
             sidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
           style={{
             background: "var(--shell-sidebar)",
             borderColor: "var(--app-border)",
             boxShadow: "var(--panel-shadow)",
-            backdropFilter: "blur(20px)",
           }}
         >
           <div className="mb-6 flex items-center justify-between lg:justify-start">
