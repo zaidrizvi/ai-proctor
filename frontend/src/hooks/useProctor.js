@@ -45,6 +45,7 @@ const DETECTOR_NO_FACE_IDENTITY_GRACE_MS = 450;
 const MAX_CAPTURE_WIDTH = 768;
 const JPEG_QUALITY = 0.72;
 const PRIORITY_SUSPICIOUS_OBJECTS = new Set(["cell phone", "book", "remote"]);
+const GAZE_TRACKING_ENABLED = false;
 
 const useProctor = ({
   videoRef,
@@ -560,7 +561,7 @@ const useProctor = ({
       return;
     }
 
-    const gazeCurrentlyAway = gazeResult?.status === "fulfilled"
+    const gazeCurrentlyAway = GAZE_TRACKING_ENABLED && gazeResult?.status === "fulfilled"
       ? gazeResult.value.data?.event === "gaze_away"
       : activeFlagsRef.current.gazeAway;
     const rawHeadTurned = head.event === "head_turned";
@@ -609,6 +610,12 @@ const useProctor = ({
   }, [decayStreak, emitAlert, hasRecentDownwardHeadPoseGrace, suppressHeadTurnAlerts]);
 
   const processGazeResult = useCallback((gazeResult, faceState = {}, token) => {
+    if (!GAZE_TRACKING_ENABLED) {
+      decayStreak("gazeAway");
+      activeFlagsRef.current.gazeAway = false;
+      return;
+    }
+
     let gazeLookingAway = false;
     let gazeDirection = "side";
 
@@ -922,7 +929,9 @@ const useProctor = ({
 
   const deriveTrackerFacePresence = useCallback((headResult, gazeResult) => {
     const headData = headResult?.status === "fulfilled" ? headResult.value.data : null;
-    const gazeData = gazeResult?.status === "fulfilled" ? gazeResult.value.data : null;
+    const gazeData = GAZE_TRACKING_ENABLED && gazeResult?.status === "fulfilled"
+      ? gazeResult.value.data
+      : null;
     const headStable = Boolean(
       headData?.head_detected &&
       Number(headData?.pose_quality || 0) >= 0.5
@@ -997,13 +1006,16 @@ const useProctor = ({
             tracker_id: sessionId || examId || "default",
           }),
         },
-        {
+      ];
+
+      if (GAZE_TRACKING_ENABLED) {
+        criticalRequests.push({
           key: "gaze",
           promise: axios.post(`${mlUrl}/gaze/analyze`, {
             frame,
           }),
-        },
-      ];
+        });
+      }
 
       const criticalResults = await Promise.allSettled(
         criticalRequests.map((request) => request.promise)
@@ -1013,7 +1025,7 @@ const useProctor = ({
       );
       const faceRes = criticalResultMap.face;
       const headRes = criticalResultMap.head;
-      const gazeRes = criticalResultMap.gaze;
+      const gazeRes = GAZE_TRACKING_ENABLED ? criticalResultMap.gaze : null;
 
       criticalResults.forEach((result, index) => {
         if (result.status === "rejected") {

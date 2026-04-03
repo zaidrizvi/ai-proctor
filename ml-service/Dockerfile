@@ -8,10 +8,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # OpenCV / MediaPipe / TensorFlow runtime dependencies commonly needed on CPU hosts.
+# MediaPipe Tasks also needs GLES/EGL shared libs on slim Debian images.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ffmpeg \
+    libegl1 \
+    libgles2 \
     libglib2.0-0 \
+    libgl1 \
     libsm6 \
     libxext6 \
     libxrender1 \
