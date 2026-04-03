@@ -366,6 +366,7 @@ const ExamInterface = () => {
   const [microphonePrepared, setMicrophonePrepared] = useState(false);
   const [liveAlerts, setLiveAlerts] = useState([]);
   const [mlFramePreview, setMlFramePreview] = useState("");
+  const [fullscreenLocked, setFullscreenLocked] = useState(false);
 
   const getRemainingSeconds = useCallback((activeSession, loadedExam) => {
     const totalSeconds = Number(loadedExam?.duration || 0) * 60;
@@ -1032,6 +1033,21 @@ const ExamInterface = () => {
       .catch(() => false);
   }, []);
 
+  const restoreFullscreenFromKeyboard = useCallback(async () => {
+    if (document.fullscreenElement) {
+      setFullscreenLocked(false);
+      return true;
+    }
+
+    try {
+      await document.documentElement.requestFullscreen();
+      setFullscreenLocked(false);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const handleBeginExam = async () => {
     if (identityBusy) return;
 
@@ -1205,18 +1221,21 @@ const ExamInterface = () => {
   }, [registerTabSwitch]);
 
   const handleFullscreenChange = useCallback(() => {
-    if (!fullscreenReadyRef.current) return;
+    const inFullscreen = !!document.fullscreenElement;
+
+    if (examReady && !submitted && !submitting) {
+      setFullscreenLocked(!inFullscreen);
+    }
+
+    if (!fullscreenReadyRef.current || submitting) return;
     setTimeout(() => {
-      const inFullscreen = !!document.fullscreenElement;
-      if (!inFullscreen) {
+      const stillInFullscreen = !!document.fullscreenElement;
+      if (!stillInFullscreen) {
         incrementFullscreenExit();
         logProctorEvent("fullscreen_exit", "high", "Student exited fullscreen");
-        setTimeout(() => {
-          document.documentElement.requestFullscreen().catch(() => {});
-        }, 1500);
       }
     }, 100);
-  }, [incrementFullscreenExit]);
+  }, [examReady, incrementFullscreenExit, logProctorEvent, submitted, submitting]);
 
   useEffect(() => {
     if (!examReady || submitted) return undefined;
@@ -1224,6 +1243,44 @@ const ExamInterface = () => {
     setupProctoring();
     return () => cleanupProctoring();
   }, [examReady, submitted, handleVisibilityChange, handleWindowBlur, handleFullscreenChange]);
+
+  useEffect(() => {
+    if (!examReady || submitted || submitting) {
+      setFullscreenLocked(false);
+      return undefined;
+    }
+
+    setFullscreenLocked(!document.fullscreenElement);
+
+    return undefined;
+  }, [examReady, submitted, submitting]);
+
+  useEffect(() => {
+    if (!examReady || submitted || !fullscreenLocked) {
+      return undefined;
+    }
+
+    const handleFullscreenRestoreKey = (event) => {
+      const targetTag = event.target?.tagName || "";
+      const isTypingTarget = ["INPUT", "TEXTAREA", "SELECT"].includes(targetTag);
+
+      if (isTypingTarget) {
+        return;
+      }
+
+      if (event.key?.toLowerCase() !== "f") {
+        return;
+      }
+
+      event.preventDefault();
+      void restoreFullscreenFromKeyboard();
+    };
+
+    window.addEventListener("keydown", handleFullscreenRestoreKey);
+    return () => {
+      window.removeEventListener("keydown", handleFullscreenRestoreKey);
+    };
+  }, [examReady, fullscreenLocked, restoreFullscreenFromKeyboard, submitted]);
 
   // ── answer + submit ─────────────────────────────────────────
   const persistExamProgress = useCallback(async (
@@ -1325,20 +1382,34 @@ const ExamInterface = () => {
   }, [examId, session?._id, session?.status, submitted]);
 
   const updateCurrentQuestion = useCallback((nextQuestionIndex) => {
+    if (fullscreenLocked) {
+      return;
+    }
+
     setCurrentQ(nextQuestionIndex);
     void persistExamProgress(answers, nextQuestionIndex);
-  }, [answers, persistExamProgress]);
+  }, [answers, fullscreenLocked, persistExamProgress]);
 
   const handleAnswerSelection = useCallback((questionIndex, optionIndex) => {
+    if (fullscreenLocked) {
+      return;
+    }
+
     const nextAnswers = {
       ...answers,
       [questionIndex]: optionIndex,
     };
     setAnswers(nextAnswers);
     void persistExamProgress(nextAnswers, currentQ);
-  }, [answers, currentQ, persistExamProgress]);
+  }, [answers, currentQ, fullscreenLocked, persistExamProgress]);
 
-  const handleSubmit = () => submitExam();
+  const handleSubmit = () => {
+    if (fullscreenLocked) {
+      return;
+    }
+
+    submitExam();
+  };
 
   const baselineMissingLabel = baselineCalibrationInfo.missing.length === 0
     ? ""
@@ -1567,10 +1638,31 @@ const ExamInterface = () => {
   const totalAnswered = Object.keys(answers).length;
   const totalQuestions = exam?.questions.length || 0;
   const progressPercentage = totalQuestions > 0 ? ((currentQ + 1) / totalQuestions) * 100 : 0;
+  const examInteractionLocked = examReady && !submitted && fullscreenLocked;
 
   // ── main exam UI ────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-[var(--app-bg)]" style={{ backgroundImage: "var(--app-gradient)" }}>
+    <div className="relative min-h-screen bg-[var(--app-bg)]" style={{ backgroundImage: "var(--app-gradient)" }}>
+      {examInteractionLocked && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/72 px-6 backdrop-blur-sm">
+          <div className="theme-panel w-full max-w-lg rounded-[28px] border border-red-500/25 px-6 py-7 text-center">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-3xl bg-red-500/12 text-red-300">
+              <FiAlertTriangle className="text-2xl" />
+            </div>
+            <p className="text-xs font-medium uppercase tracking-[0.22em] text-red-300/80">Fullscreen Required</p>
+            <h2 className="mt-2 text-2xl font-semibold text-[var(--app-text)]">Exam interaction is locked</h2>
+            <p className="mt-3 text-sm leading-relaxed text-[var(--app-muted)]">
+              You exited fullscreen, so answering questions and navigation are paused.
+              Press <span className="mx-1 rounded-lg bg-[var(--panel-strong)] px-2 py-1 font-mono text-[var(--app-text)]">F</span>
+              to re-enter fullscreen and continue the exam.
+            </p>
+            <p className="mt-3 text-xs text-amber-200">
+              The timer will keep running while fullscreen is off.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* topbar */}
       <div
         className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b px-4 py-3 sm:px-6"
@@ -1631,11 +1723,12 @@ const ExamInterface = () => {
               <div className="space-y-3">
                 {question?.options.map((option, i) => (
                   <button key={i} onClick={() => handleAnswerSelection(currentQ, i)}
+                    disabled={examInteractionLocked}
                     className={`w-full rounded-[22px] border px-4 py-3.5 text-left text-sm transition-all duration-200 ${
                       answers[currentQ] === i
                         ? "border-sky-400/40 bg-sky-500/12 text-[var(--app-text)]"
                         : "text-[var(--app-muted)] hover:text-[var(--app-text)]"
-                    }`}
+                    } ${examInteractionLocked ? "cursor-not-allowed opacity-55" : ""}`}
                     style={answers[currentQ] === i
                       ? undefined
                       : { background: "var(--panel-bg)", borderColor: "var(--app-border)" }}
@@ -1660,17 +1753,18 @@ const ExamInterface = () => {
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <button onClick={() => updateCurrentQuestion(Math.max(0, currentQ - 1))}
-              disabled={currentQ === 0}
+              disabled={currentQ === 0 || examInteractionLocked}
               className="theme-secondary-btn flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-30">
               <FiChevronLeft /> Previous
             </button>
             {currentQ < totalQuestions - 1 ? (
               <button onClick={() => updateCurrentQuestion(Math.min(totalQuestions - 1, currentQ + 1))}
-                className="theme-primary-btn flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm">
+                disabled={examInteractionLocked}
+                className="theme-primary-btn flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm disabled:opacity-50">
                 Next <FiChevronRight />
               </button>
             ) : (
-              <button onClick={handleSubmit} disabled={submitting}
+              <button onClick={handleSubmit} disabled={submitting || examInteractionLocked}
                 className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-6 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:opacity-50">
                 {submitting
                   ? <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-950/30 border-t-slate-950" />
@@ -1780,11 +1874,12 @@ const ExamInterface = () => {
                   onClick={() => updateCurrentQuestion(i)}
                   type="button"
                   aria-label={`Question ${i + 1}`}
+                  disabled={examInteractionLocked}
                   className={`h-9 rounded-xl text-xs font-medium transition-colors ${
                     i === currentQ ? "bg-sky-500 text-white"
                     : answers[i] !== undefined ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
                     : "text-[var(--app-muted)] hover:bg-[var(--panel-bg)]"
-                  }`}
+                  } ${examInteractionLocked ? "cursor-not-allowed opacity-50" : ""}`}
                   style={i === currentQ || answers[i] !== undefined ? undefined : { background: "var(--panel-soft)" }}
                 >
                   {i + 1}
@@ -1794,7 +1889,7 @@ const ExamInterface = () => {
           </div>
 
           <div className="mt-auto pt-2">
-            <button onClick={handleSubmit} disabled={submitting}
+            <button onClick={handleSubmit} disabled={submitting || examInteractionLocked}
               className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:opacity-50">
               <FiCheckCircle /> Submit Exam
             </button>

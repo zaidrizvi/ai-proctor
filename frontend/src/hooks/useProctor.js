@@ -754,7 +754,7 @@ const useProctor = ({
         identityStateRef.current.status = "compromised";
         triggerMultipleFacesAlert(
           "face",
-          "Multiple faces detected during identity verification (confirmed across checks)",
+          "Multiple faces detected in the ongoing exam camera view (confirmed across checks)",
           now,
           token
         );
@@ -766,7 +766,7 @@ const useProctor = ({
             token,
             "face_mismatch",
             "high",
-            "Identity compromised: promoted multiple-face signal persisted across verification checks"
+            "Identity compromised: an extra face kept appearing in the ongoing exam camera view"
           );
         }
       }
@@ -782,7 +782,7 @@ const useProctor = ({
       identityStateRef.current.status = "compromised";
       triggerMultipleFacesAlert(
         "face",
-        "Multiple faces detected during identity verification",
+        "Multiple faces detected in the ongoing exam camera view",
         now,
         token
       );
@@ -794,7 +794,7 @@ const useProctor = ({
           token,
           "face_mismatch",
           "high",
-          "Identity compromised: multiple faces visible during verification"
+          "Identity compromised: multiple faces were visible in the ongoing exam camera view"
         );
       }
 
