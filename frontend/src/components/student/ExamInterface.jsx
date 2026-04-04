@@ -530,6 +530,19 @@ const ExamInterface = () => {
     }
   }, [examId, studentId]);
 
+  const clearHeadPoseBaseline = useCallback(() => {
+    const storageKey = getHeadPoseBaselineStorageKey(examId, studentId);
+    if (!storageKey) {
+      return;
+    }
+
+    try {
+      window.localStorage.removeItem(storageKey);
+    } catch {
+      // Baseline cleanup should stay non-blocking.
+    }
+  }, [examId, studentId]);
+
   // ── useProctor hook ─────────────────────────────────────────
   const {
     incrementTabSwitch,
@@ -794,6 +807,7 @@ const ExamInterface = () => {
     }
 
     if (activeSession.status === "completed" && loadedExam) {
+      clearHeadPoseBaseline();
       setResult({
         score: activeSession.score || 0,
         percentage: activeSession.percentage || 0,
@@ -806,9 +820,10 @@ const ExamInterface = () => {
     }
 
     if (activeSession.status === "terminated" || activeSession.status === "abandoned") {
+      clearHeadPoseBaseline();
       setError(`This exam session is already ${activeSession.status}.`);
     }
-  }, [exam, examId, getHydratedProgress, joinExamRoom]);
+  }, [clearHeadPoseBaseline, exam, examId, getHydratedProgress, joinExamRoom]);
 
   const ensureExamSession = useCallback(async () => {
     if (sessionRef.current?._id) {
@@ -1465,6 +1480,7 @@ const ExamInterface = () => {
         tabSwitchCount: tabSwitchRef.current,
         faceNotDetectedCount: faceNotDetectedRef.current,
       });
+      clearHeadPoseBaseline();
       setResult(data);
       setSubmitted(true);
     } catch (err) {
