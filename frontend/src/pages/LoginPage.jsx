@@ -17,7 +17,7 @@ const LoginPage = () => {
 
   const getLoginErrorMessage = (err) => {
     if (!err.response) {
-      return "Cannot reach the backend at http://localhost:5000. The server likely crashed during startup because MongoDB is unavailable.";
+      return "Cannot reach the configured backend right now. Check that the API server is running and reachable, then try again.";
     }
 
     return err.response?.data?.message || "Login failed. Try again.";

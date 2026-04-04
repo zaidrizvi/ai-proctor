@@ -18,10 +18,10 @@ import StatusBadge from "../shared/StatusBadge.jsx";
 
 const defaultProctorSettings = {
   faceDetection: true,
+  faceVerification: true,
   objectDetection: true,
-  gazeTracking: true,
-  audioMonitoring: true,
-  headPoseDetection: true,
+  audioDetection: true,
+  headMovement: true,
   suspicionThreshold: 70,
 };
 
@@ -31,6 +31,29 @@ const createEmptyQuestion = () => ({
   correctAnswer: 0,
   explanation: "",
 });
+
+const proctorSettingFields = [
+  {
+    key: "faceVerification",
+    label: "Face verification",
+    description: "Require reference-face verification before identity checks run.",
+  },
+  {
+    key: "headMovement",
+    label: "Head movement",
+    description: "Track head-turn events during the exam.",
+  },
+  {
+    key: "objectDetection",
+    label: "Object detection",
+    description: "Check for suspicious objects and extra people in frame.",
+  },
+  {
+    key: "audioDetection",
+    label: "Audio detection",
+    description: "Request microphone access and flag background speech.",
+  },
+];
 
 const CreateExam = () => {
   const navigate = useNavigate();
@@ -71,6 +94,16 @@ const CreateExam = () => {
     setForm((prev) => ({
       ...prev,
       creationMode,
+    }));
+  };
+
+  const handleProctorToggle = (settingKey) => {
+    setForm((prev) => ({
+      ...prev,
+      proctorSettings: {
+        ...prev.proctorSettings,
+        [settingKey]: !prev.proctorSettings[settingKey],
+      },
     }));
   };
 
@@ -187,7 +220,7 @@ const CreateExam = () => {
           </p>
           <h1 className="theme-page-title mt-1.5">Create Exam</h1>
           <p className="theme-page-subtitle mt-1.5 max-w-2xl">
-            Build an exam for  batch, either with  AI or your own MCQs
+            Build an exam for batch, either with AI or your own MCQs
           </p>
         </div>
 
@@ -478,6 +511,41 @@ const CreateExam = () => {
           </div>
         </div>
 
+        <div className="theme-panel rounded-[28px] p-5 md:p-6">
+          <div className="mb-4 border-b pb-4" style={{ borderColor: "var(--app-border)" }}>
+            <div>
+              <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--app-text)]">
+                <FiCheckCircle className="text-[var(--accent-strong)]" />
+                Proctor Settings
+              </h2>
+              <p className="mt-1.5 text-sm text-[var(--app-muted)]">
+                Turn individual monitoring modules on or off for this exam.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            {proctorSettingFields.map((setting) => (
+              <label
+                key={setting.key}
+                className="flex cursor-pointer items-start gap-3 rounded-[22px] border px-4 py-3"
+                style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.proctorSettings[setting.key])}
+                  onChange={() => handleProctorToggle(setting.key)}
+                  className="mt-1 h-4 w-4 rounded border-[var(--app-border)]"
+                />
+                <div>
+                  <p className="text-sm font-semibold text-[var(--app-text)]">{setting.label}</p>
+                  <p className="mt-1 text-xs text-[var(--app-muted)]">{setting.description}</p>
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+
         {form.creationMode === "manual" && (
           <div className="theme-panel rounded-[28px] p-5 md:p-6">
             <div className="mb-4 flex flex-col gap-2.5 border-b pb-4 sm:flex-row sm:items-end sm:justify-between" style={{ borderColor: "var(--app-border)" }}>
@@ -593,17 +661,17 @@ const CreateExam = () => {
           whileTap={{ scale: 0.98 }}
           className="theme-primary-btn flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {loading ? (
-            <>
-              <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-              Generating with Gemini AI...
-            </>
-          ) : (
-            <>
-              {form.creationMode === "ai" ? <FiZap /> : <FiCheckCircle />}
-              {form.creationMode === "ai" ? "Generate & Create Exam" : "Create Manual Exam"}
-            </>
-          )}
+              {loading ? (
+                <>
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  Generating with Gemini AI...
+                </>
+              ) : (
+                <>
+                  {form.creationMode === "ai" ? <FiZap /> : <FiCheckCircle />}
+                  {form.creationMode === "ai" ? "Generate & Create Exam" : "Create Manual Exam"}
+                </>
+              )}
         </motion.button>
       </form>
     </div>

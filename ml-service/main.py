@@ -36,10 +36,9 @@ def register_ml_routers():
             return
 
         try:
-            from routers import audio, face, gaze, head_pose, object_detect
+            from routers import audio, face, head_pose, object_detect
 
             app.include_router(face.router, prefix="/face", tags=["Face"])
-            app.include_router(gaze.router, prefix="/gaze", tags=["Gaze"])
             app.include_router(head_pose.router, prefix="/head", tags=["Head Pose"])
             app.include_router(object_detect.router, prefix="/objects", tags=["Object Detection"])
             app.include_router(audio.router, prefix="/audio", tags=["Audio"])

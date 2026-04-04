@@ -7,6 +7,10 @@ import {
   studentCanAccessExam,
   validateExamSchedule,
 } from "../utils/examPolicy.js";
+import {
+  normalizeExamProctorSettings,
+  withNormalizedProctorSettings,
+} from "../utils/proctorSettings.js";
 import { syncSessionProctorSummary } from "../utils/proctorSummary.js";
 
 const EXAM_UPDATE_FIELDS = [
@@ -111,10 +115,10 @@ export const createExam = async (req, res) => {
       createdBy: req.user._id,
       scheduledAt: scheduleValidation.scheduledAt,
       expiresAt: scheduleValidation.expiresAt,
-      proctorSettings: proctorSettings || {},
+      proctorSettings: normalizeExamProctorSettings(proctorSettings),
     });
 
-    res.status(201).json(exam);
+    res.status(201).json(withNormalizedProctorSettings(exam));
   } catch (error) {
     console.error("Create exam error:", error);
     if (error instanceof MCQGenerationError) {
@@ -154,7 +158,7 @@ export const getExams = async (req, res) => {
         : exams;
 
     if (req.user.role !== "student" || visibleExams.length === 0) {
-      return res.json(visibleExams);
+      return res.json(visibleExams.map(withNormalizedProctorSettings));
     }
 
     const existingSessions = await ExamSession.find({
@@ -172,7 +176,7 @@ export const getExams = async (req, res) => {
       (exam) => !completedExamIds.has(exam._id.toString())
     );
 
-    res.json(availableExams);
+    res.json(availableExams.map(withNormalizedProctorSettings));
   } catch (error) {
     console.error("Get exams error:", error);
     res.status(500).json({ message: "Server error" });
@@ -196,7 +200,7 @@ export const getExamById = async (req, res) => {
       if (!examOwnedBy(exam, req.user._id)) {
         return res.status(403).json({ message: "Not authorized" });
       }
-      return res.json(exam);
+      return res.json(withNormalizedProctorSettings(exam));
     }
 
     const existingSession = await findStudentExamSession(exam._id, req.user._id);
@@ -224,6 +228,7 @@ export const getExamById = async (req, res) => {
         options: q.options,
         // correctAnswer and explanation stripped out
       }));
+      safeExam.proctorSettings = normalizeExamProctorSettings(safeExam.proctorSettings);
       return res.json(safeExam);
     }
   } catch (error) {
@@ -266,12 +271,16 @@ export const updateExam = async (req, res) => {
       updates.expiresAt = scheduleValidation.expiresAt;
     }
 
+    if (Object.prototype.hasOwnProperty.call(updates, "proctorSettings")) {
+      updates.proctorSettings = normalizeExamProctorSettings(updates.proctorSettings);
+    }
+
     const updated = await Exam.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,
     });
 
-    res.json(updated);
+    res.json(withNormalizedProctorSettings(updated));
   } catch (error) {
     console.error("Update exam error:", error);
     res.status(500).json({ message: "Server error" });

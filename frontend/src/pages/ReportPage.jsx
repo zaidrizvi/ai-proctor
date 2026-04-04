@@ -27,7 +27,6 @@ const severityColor = (severity) => {
 const eventLabel = (type) => ({
   face_not_detected: "Face Not Detected",
   multiple_faces: "Multiple Faces",
-  gaze_away: "Gaze Away",
   head_turned: "Head Turned",
   audio_detected: "Audio Detected",
   object_detected: "Object Detected",
@@ -35,6 +34,7 @@ const eventLabel = (type) => ({
   fullscreen_exit: "Fullscreen Exit",
   face_mismatch: "Face Mismatch",
   ml_service_unavailable: "ML Unavailable",
+  camera_frame_unavailable: "Camera Frame Unavailable",
 }[type] || type);
 
 const getSessionOutcome = (session) => {
@@ -131,15 +131,16 @@ const ReportPage = () => {
   const { session, events } = data;
   const exam = session.exam;
   const student = session.student;
+  const totalQuestions = exam?.totalQuestions || exam?.questions?.length || 0;
   const sessionOutcome = getSessionOutcome(session);
   const OutcomeIcon = sessionOutcome.icon;
   const scoreSummary = session.status === "ongoing"
     ? {
         value: "--",
-        meta: `${exam?.questions?.length || "-"} questions total`,
+        meta: `${totalQuestions || "-"} questions total`,
       }
     : {
-        value: `${session.score}/${exam?.questions?.length}`,
+        value: `${session.score}/${totalQuestions}`,
         meta: "Final score",
       };
 

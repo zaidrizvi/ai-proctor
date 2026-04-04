@@ -81,21 +81,21 @@ export const validateExamSchedule = (scheduledAt, expiresAt) => {
 const EVENT_PROCTOR_SETTING_MAP = {
   face_not_detected: "faceDetection",
   multiple_faces: "faceDetection",
-  face_mismatch: "faceDetection",
-  gaze_away: "gazeTracking",
-  head_turned: "headPoseDetection",
-  audio_detected: "audioMonitoring",
+  face_mismatch: "faceVerification",
+  head_turned: "headMovement",
+  audio_detected: "audioDetection",
   object_detected: "objectDetection",
   tab_switch: null,
   fullscreen_exit: null,
   ml_service_unavailable: null,
+  camera_frame_unavailable: null,
 };
 
 export const isProctorEventEnabled = (exam, eventType) => {
   const settingKey = EVENT_PROCTOR_SETTING_MAP[eventType];
   if (!settingKey) return true;
 
-  const settings = exam?.proctorSettings || {};
-  if (settings[settingKey] === undefined) return true;
+  const settings = getExamProctorSettings(exam);
   return Boolean(settings[settingKey]);
 };
+import { getExamProctorSettings } from "./proctorSettings.js";

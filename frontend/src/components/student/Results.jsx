@@ -15,32 +15,7 @@ const Results = () => {
     const fetchResults = async () => {
       try {
         const { data } = await api.get("/reports/my-results");
-        const enrichedSessions = await Promise.all(
-          data.map(async (session) => {
-            if (session.exam?.questions?.length || session.exam?.totalQuestions) {
-              return session;
-            }
-
-            try {
-              const { data: reportData } = await api.get(`/reports/session/${session._id}`);
-              const totalQuestions = reportData?.session?.exam?.questions?.length || 0;
-              const passingMarks = reportData?.session?.exam?.passingMarks;
-
-              return {
-                ...session,
-                exam: {
-                  ...session.exam,
-                  totalQuestions,
-                  passingMarks,
-                },
-              };
-            } catch {
-              return session;
-            }
-          })
-        );
-
-        setSessions(enrichedSessions);
+        setSessions(Array.isArray(data) ? data : []);
       } catch {
         setError("Failed to load results.");
       } finally {
@@ -185,7 +160,9 @@ const ResultCard = ({ session, index, onOpenReport }) => {
               </div>
               <div>
                 <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--app-subtle)]">Submitted</p>
-                <p className="text-sm font-medium text-[var(--app-text)]">{new Date(session.createdAt).toLocaleDateString()}</p>
+                <p className="text-sm font-medium text-[var(--app-text)]">
+                  {new Date(session.submittedAt || session.createdAt).toLocaleDateString()}
+                </p>
               </div>
             </div>
           </div>

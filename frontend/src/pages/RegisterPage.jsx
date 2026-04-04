@@ -4,7 +4,6 @@ import { motion } from "framer-motion";
 import { FiEye, FiEyeOff, FiLock, FiMail, FiShield, FiUser } from "react-icons/fi";
 import Navbar from "../components/shared/Navbar.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import api from "../utils/api.js";
 import { describeMlError, postMlJson } from "../utils/mlClient.js";
 
 void motion;
@@ -170,31 +169,37 @@ const RegisterPage = () => {
         return;
       }
 
-      await registerStudent(form.name, form.email, form.password, form.batchCode);
+      const { data: embeddingData } = await postMlJson("/face/reference-embedding", {
+        frame: faceImage,
+      }, {
+        label: "register.face.reference_embedding",
+        retries: 1,
+        timeoutMs: 20000,
+        warmup: true,
+      });
 
-      if (faceImage) {
-        try {
-          const { data: embeddingData } = await postMlJson("/face/reference-embedding", {
-            frame: faceImage,
-          }, {
-            label: "register.face.reference_embedding",
-            retries: 1,
-            timeoutMs: 20000,
-            warmup: true,
-          });
-
-          await api.post("/auth/face-reference", {
-            faceImage,
-            faceEmbedding: Array.isArray(embeddingData.embedding) ? embeddingData.embedding : undefined,
-          });
-        } catch (error) {
-          console.warn("Face reference save skipped during registration:", error?.mlMeta || error);
-        }
+      if (!embeddingData.embedding_created || !Array.isArray(embeddingData.embedding)) {
+        setError("Capture a clear frame with exactly one visible face before creating the account.");
+        setLoading(false);
+        return;
       }
+
+      await registerStudent({
+        name: form.name,
+        email: form.email,
+        password: form.password,
+        batchCode: form.batchCode,
+        faceImage,
+        faceEmbedding: embeddingData.embedding,
+      });
 
       navigate("/student");
     } catch (err) {
-      setError(err.response?.data?.message || "Registration failed. Try again.");
+      setError(
+        err?.mlMeta
+          ? describeMlError(err, { actionLabel: "Reference face setup" })
+          : err.response?.data?.message || "Registration failed. Try again."
+      );
     } finally {
       setLoading(false);
     }

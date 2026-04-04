@@ -47,12 +47,6 @@ const EVENT_SCORING_RULES = {
     mergeWindowMs: 2_500,
     group: "behavior",
   },
-  gaze_away: {
-    weight: 0.06,
-    severityScale: 2.6,
-    mergeWindowMs: 8_000,
-    group: "attention",
-  },
   head_turned: {
     weight: 0.09,
     severityScale: 3.1,
@@ -64,6 +58,12 @@ const EVENT_SCORING_RULES = {
     severityScale: 2.4,
     mergeWindowMs: 15_000,
     group: "environment",
+  },
+  camera_frame_unavailable: {
+    weight: 0,
+    severityScale: 1,
+    mergeWindowMs: 15_000,
+    group: "system",
   },
   ml_service_unavailable: {
     weight: 0,
@@ -333,7 +333,9 @@ export const summarizeProctorEvents = (events = []) => {
     eventCounts,
     incidentCounts: suspicion.incidentCounts,
     totalIncidentCount: suspicion.totalIncidentCount,
-    mlUnavailableCount: eventCounts.ml_service_unavailable || 0,
+    mlUnavailableCount:
+      (eventCounts.ml_service_unavailable || 0) +
+      (eventCounts.camera_frame_unavailable || 0),
   };
 };
 

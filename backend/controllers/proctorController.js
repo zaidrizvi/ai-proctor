@@ -4,6 +4,9 @@ import Exam from "../models/Exam.js";
 import { examOwnedBy, isProctorEventEnabled } from "../utils/examPolicy.js";
 import { syncSessionProctorSummary } from "../utils/proctorSummary.js";
 
+const filterVisibleEvents = (events = []) =>
+  events.filter((event) => event?.eventType !== "gaze_away");
+
 // @desc    Log a proctor event (called from frontend during exam)
 // @route   POST /api/proctor/event
 export const logEvent = async (req, res) => {
@@ -104,20 +107,17 @@ export const getSessionEvents = async (req, res) => {
       return res.status(404).json({ message: "Session not found" });
     }
 
-    const isStudentOwner =
-      req.user.role === "student" &&
-      session.student._id.toString() === req.user._id.toString();
     const isAdminOwner =
       req.user.role === "admin" &&
       examOwnedBy(session.exam, req.user._id);
 
-    if (!isStudentOwner && !isAdminOwner) {
+    if (!isAdminOwner) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const events = await ProctorEvent.find({
+    const events = filterVisibleEvents(await ProctorEvent.find({
       session: req.params.sessionId,
-    }).sort({ timestamp: 1 });
+    }).sort({ timestamp: 1 }));
 
     await syncSessionProctorSummary(session._id);
     res.json(events);
@@ -140,9 +140,9 @@ export const getExamEvents = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const events = await ProctorEvent.find({ exam: req.params.examId })
+    const events = filterVisibleEvents(await ProctorEvent.find({ exam: req.params.examId })
       .populate("student", "name email")
-      .sort({ timestamp: 1 });
+      .sort({ timestamp: 1 }));
 
     res.json(events);
   } catch (error) {

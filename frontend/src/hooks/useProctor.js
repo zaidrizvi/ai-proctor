@@ -9,7 +9,6 @@ const PRESENCE_MULTIPLE_FACES_CONFIRM_STREAK = 2;
 const HEAD_TURN_STREAK_TO_ALERT = 2;
 const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
 const HEAD_TURN_RECOVERY_STREAK = 2;
-const GAZE_AWAY_STREAK_TO_ALERT = 2;
 const NO_FRAME_STREAK_TO_ALERT = 2;
 const FACE_MISMATCH_STREAK_TO_ALERT = 2;
 const FACE_MATCH_RECOVERY_STREAK = 2;
@@ -29,7 +28,6 @@ const MIN_HEAD_POSE_QUALITY_FOR_ALERT = 0.46;
 const MIN_HEAD_POSE_QUALITY_FOR_NO_FACE_GRACE = 0.42;
 const MIN_FACE_CONFIDENCE_FOR_STABLE_ALERTS = 0.54;
 const MIN_FACE_AREA_RATIO_FOR_STABLE_ALERTS = 0.024;
-const MIN_FACE_AREA_RATIO_FOR_FALLBACK = 0.02;
 const MIN_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.02;
 const MIN_DOWNWARD_HEAD_PITCH_SCORE_FOR_ALERT = 1.28;
 const MIN_DOWNWARD_HEAD_NOSE_SCORE_FOR_ALERT = 1.18;
@@ -46,7 +44,6 @@ const MOBILE_CAPTURE_WIDTH = 640;
 const DESKTOP_JPEG_QUALITY = 0.72;
 const MOBILE_JPEG_QUALITY = 0.68;
 const PRIORITY_SUSPICIOUS_OBJECTS = new Set(["cell phone", "book", "remote"]);
-const GAZE_TRACKING_ENABLED = false;
 
 const isLikelyMobileBrowser = () => {
   if (typeof navigator === "undefined") {
@@ -68,6 +65,10 @@ const useProctor = ({
   referenceFaceEmbedding = [],
   headPoseBaseline = null,
   suppressHeadTurnAlerts = false,
+  faceDetectionEnabled = true,
+  faceVerificationEnabled = true,
+  headMovementEnabled = true,
+  objectDetectionEnabled = true,
   onAlert,
   onMlFrame,
   intervalMs = 700,
@@ -110,7 +111,6 @@ const useProctor = ({
   const activeFlagsRef = useRef({
     faceMissing: false,
     multipleFaces: false,
-    gazeAway: false,
     headTurned: false,
     objectDetected: false,
     cameraFrameUnavailable: false,
@@ -130,7 +130,6 @@ const useProctor = ({
     presenceMultipleFaces: 0,
     headTurned: 0,
     headTurnRecovery: 0,
-    gazeAway: 0,
     objectDetected: 0,
     faceMismatch: 0,
     faceVerified: 0,
@@ -139,7 +138,6 @@ const useProctor = ({
     face_not_detected: 0,
     multiple_faces: 0,
     face_mismatch: 0,
-    gaze_away: 0,
     head_turned: 0,
     tab_switch: 0,
     fullscreen_exit: 0,
@@ -166,6 +164,11 @@ const useProctor = ({
   }, []);
 
   const hasReferenceIdentity = Boolean(referenceFace) || referenceFaceEmbedding.length > 0;
+  const visualMonitoringEnabled =
+    faceDetectionEnabled ||
+    faceVerificationEnabled ||
+    headMovementEnabled ||
+    objectDetectionEnabled;
 
   const hasFreshVerifiedIdentity = useCallback((now) => {
     if (!hasReferenceIdentity) {
@@ -519,9 +522,10 @@ const useProctor = ({
     triggerMultipleFacesAlert,
   ]);
 
-  const processHeadResult = useCallback((headResult, gazeResult, now, faceState = {}, token) => {
+  const processHeadResult = useCallback((headResult, now, faceState = {}, token) => {
     const recentDownwardHeadPoseGraceActive = hasRecentDownwardHeadPoseGrace(now);
     const shouldSuppressHeadTurn =
+      !headMovementEnabled ||
       suppressHeadTurnAlerts ||
       faceState.identityMismatchVisible ||
       (faceState.noFace && !recentDownwardHeadPoseGraceActive);
@@ -579,9 +583,6 @@ const useProctor = ({
       return;
     }
 
-    const gazeCurrentlyAway = GAZE_TRACKING_ENABLED && gazeResult?.status === "fulfilled"
-      ? gazeResult.value.data?.event === "gaze_away"
-      : activeFlagsRef.current.gazeAway;
     const rawHeadTurned = head.event === "head_turned";
     const obviousTurn = Boolean(head.obvious_turn);
     const poseQuality = Number(head.pose_quality || 0);
@@ -592,7 +593,6 @@ const useProctor = ({
     const movementReason = String(head.movement_reason || "none");
     const headTurned = rawHeadTurned && !(
       turnAxis === "downward" &&
-      !gazeCurrentlyAway &&
       movementScore < 1.2
     );
 
@@ -608,7 +608,6 @@ const useProctor = ({
     const borderlineDownwardTurn = (
       headTurned &&
       turnAxis === "downward" &&
-      !gazeCurrentlyAway &&
       movementReason.startsWith("downward") &&
       downwardPitchScore < MIN_DOWNWARD_HEAD_PITCH_SCORE_FOR_ALERT &&
       downwardNoseScore < MIN_DOWNWARD_HEAD_NOSE_SCORE_FOR_ALERT &&
@@ -625,57 +624,7 @@ const useProctor = ({
     } else {
       recoverHeadTurnSignal();
     }
-  }, [decayStreak, emitAlert, hasRecentDownwardHeadPoseGrace, suppressHeadTurnAlerts]);
-
-  const processGazeResult = useCallback((gazeResult, faceState = {}, token) => {
-    if (!GAZE_TRACKING_ENABLED) {
-      decayStreak("gazeAway");
-      activeFlagsRef.current.gazeAway = false;
-      return;
-    }
-
-    let gazeLookingAway = false;
-    let gazeDirection = "side";
-
-    if (faceState.noFace || faceState.weakFace || faceState.identityMismatchVisible) {
-      decayStreak("gazeAway");
-      activeFlagsRef.current.gazeAway = false;
-      return;
-    }
-
-    if (gazeResult?.status === "fulfilled") {
-      const gaze = gazeResult.value.data;
-      gazeLookingAway = gaze.event === "gaze_away";
-
-      const horizontalValue = gaze.horizontal_angle_delta ?? gaze.horizontal_angle;
-      const verticalValue = gaze.vertical_angle_delta ?? gaze.vertical_angle;
-      gazeDirection = Math.abs(horizontalValue) >= Math.abs(verticalValue)
-        ? (horizontalValue > 0 ? "right" : "left")
-        : (verticalValue > 0 ? "down" : "up");
-    }
-
-    if (gazeLookingAway) {
-      streaksRef.current.gazeAway += 1;
-    } else {
-      decayStreak("gazeAway");
-    }
-
-    if (
-      streaksRef.current.gazeAway >= GAZE_AWAY_STREAK_TO_ALERT &&
-      !activeFlagsRef.current.gazeAway
-    ) {
-      activeFlagsRef.current.gazeAway = true;
-      countersRef.current.gaze_away += 1;
-      emitAlert(
-        token,
-        "gaze_away",
-        "medium",
-        `Student looked away from screen (${gazeDirection})`
-      );
-    } else if (!gazeLookingAway) {
-      activeFlagsRef.current.gazeAway = false;
-    }
-  }, [decayStreak, emitAlert]);
+  }, [decayStreak, emitAlert, hasRecentDownwardHeadPoseGrace, headMovementEnabled, suppressHeadTurnAlerts]);
 
   const processObjectResult = useCallback((response, token) => {
     if (!isTokenActive(token)) {
@@ -863,6 +812,7 @@ const useProctor = ({
   const scheduleBackgroundTasks = useCallback((frame, token, faceState = {}, trackerPresence = {}) => {
     const now = Date.now();
     if (
+      objectDetectionEnabled &&
       !objectAnalysisInFlightRef.current &&
       now - lastObjectCheckAtRef.current >= OBJECT_ANALYSIS_INTERVAL_MS
     ) {
@@ -898,6 +848,7 @@ const useProctor = ({
       ? Math.min(verifyIntervalMs, IDENTITY_URGENT_VERIFY_INTERVAL_MS)
       : Math.max(verifyIntervalMs, IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS);
     const shouldAttemptIdentityCheck = (
+      faceVerificationEnabled &&
       hasReferenceIdentity &&
       (
         faceState.multipleFaces ||
@@ -942,8 +893,10 @@ const useProctor = ({
         }
       });
   }, [
+    faceVerificationEnabled,
     hasReferenceIdentity,
     isTokenActive,
+    objectDetectionEnabled,
     processObjectResult,
     processVerifyResult,
     referenceFace,
@@ -951,34 +904,23 @@ const useProctor = ({
     verifyIntervalMs,
   ]);
 
-  const deriveTrackerFacePresence = useCallback((headResult, gazeResult) => {
+  const deriveTrackerFacePresence = useCallback((headResult) => {
     const headData = headResult?.status === "fulfilled" ? headResult.value.data : null;
-    const gazeData = GAZE_TRACKING_ENABLED && gazeResult?.status === "fulfilled"
-      ? gazeResult.value.data
-      : null;
     const headStable = Boolean(
       headData?.head_detected &&
       Number(headData?.pose_quality || 0) >= 0.5
     );
-    const gazeStable = Boolean(
-      gazeData?.face_detected &&
-      Number(gazeData?.face_area_ratio || 0) >= MIN_FACE_AREA_RATIO_FOR_FALLBACK &&
-      !gazeData?.looking_away
-    );
 
     return {
-      facePresent: Boolean(headStable || gazeStable),
-      stable: Boolean(headStable || gazeStable),
-      weak: Boolean(
-        (headData?.head_detected && !headStable) ||
-        (gazeData?.face_detected && !gazeStable)
-      ),
+      facePresent: Boolean(headStable),
+      stable: Boolean(headStable),
+      weak: Boolean(headData?.head_detected && !headStable),
     };
   }, []);
 
   const analyzeFrame = useCallback(async () => {
     const token = lifecycleTokenRef.current;
-    if (!isTokenActive(token) || !examId) {
+    if (!isTokenActive(token) || !examId || !visualMonitoringEnabled) {
       return;
     }
 
@@ -1020,40 +962,31 @@ const useProctor = ({
       analysisCycleRef.current += 1;
 
       const criticalRequests = [
-        {
-          key: "face",
-          promise: postMlJson("/face/detect", { frame }, {
-            label: "proctor.face.detect",
-            timeoutMs: 10000,
-            warmup: true,
-          }),
-        },
-        {
-          key: "head",
-          promise: postMlJson("/head/analyze", {
-            frame,
-            baseline: headPoseBaseline,
-            tracker_id: sessionId || examId || "default",
-          }, {
-            label: "proctor.head.analyze",
-            timeoutMs: 10000,
-            warmup: true,
-          }),
-        },
+        ...(faceDetectionEnabled
+          ? [{
+              key: "face",
+              promise: postMlJson("/face/detect", { frame }, {
+                label: "proctor.face.detect",
+                timeoutMs: 10000,
+                warmup: true,
+              }),
+            }]
+          : []),
+        ...(headMovementEnabled
+          ? [{
+              key: "head",
+              promise: postMlJson("/head/analyze", {
+                frame,
+                baseline: headPoseBaseline,
+                tracker_id: sessionId || examId || "default",
+              }, {
+                label: "proctor.head.analyze",
+                timeoutMs: 10000,
+                warmup: true,
+              }),
+            }]
+          : []),
       ];
-
-      if (GAZE_TRACKING_ENABLED) {
-        criticalRequests.push({
-          key: "gaze",
-          promise: postMlJson("/gaze/analyze", {
-            frame,
-          }, {
-            label: "proctor.gaze.analyze",
-            timeoutMs: 10000,
-            warmup: true,
-          }),
-        });
-      }
 
       const criticalResults = await Promise.allSettled(
         criticalRequests.map((request) => request.promise)
@@ -1061,9 +994,8 @@ const useProctor = ({
       const criticalResultMap = Object.fromEntries(
         criticalRequests.map((request, index) => [request.key, criticalResults[index]])
       );
-      const faceRes = criticalResultMap.face;
-      const headRes = criticalResultMap.head;
-      const gazeRes = GAZE_TRACKING_ENABLED ? criticalResultMap.gaze : null;
+      const faceRes = criticalResultMap.face ?? null;
+      const headRes = criticalResultMap.head ?? null;
 
       criticalResults.forEach((result, index) => {
         if (result.status === "rejected") {
@@ -1076,12 +1008,12 @@ const useProctor = ({
         }
       });
 
-      const criticalCompletedCount = [faceRes, headRes, gazeRes].filter(
+      const criticalCompletedCount = [faceRes, headRes].filter(
         (result) => result?.status === "fulfilled"
       ).length;
       const now = Date.now();
 
-      if (criticalCompletedCount === 0) {
+      if (criticalRequests.length > 0 && criticalCompletedCount === 0) {
         console.warn("ML analysis failed: no vision checks completed");
         if (now - lastAlertAtRef.current.mlUnavailable >= 30000) {
           lastAlertAtRef.current.mlUnavailable = now;
@@ -1097,11 +1029,24 @@ const useProctor = ({
 
       countersRef.current.total_checks += 1;
       refreshMultipleFacesState(now);
-      const trackerPresence = deriveTrackerFacePresence(headRes, gazeRes);
+      const trackerPresence = deriveTrackerFacePresence(headRes);
       refreshRecentHeadPoseState(headRes, now);
-      const faceState = processFaceResult(faceRes, now, trackerPresence, token);
-      processHeadResult(headRes, gazeRes, now, faceState, token);
-      processGazeResult(gazeRes, faceState, token);
+      const faceState = faceDetectionEnabled
+        ? processFaceResult(faceRes, now, trackerPresence, token)
+        : {
+            faceDetectorAvailable: false,
+            faceDetected: false,
+            facePresent: trackerPresence.facePresent,
+            noFace: false,
+            weakFace: trackerPresence.weak,
+            fallbackFacePresent: false,
+            detectorNoFace: false,
+            identityMismatchVisible: false,
+            faceConfidence: 0,
+            faceAreaRatio: 0,
+            multipleFaces: false,
+          };
+      processHeadResult(headRes, now, faceState, token);
       scheduleBackgroundTasks(frame, token, faceState, trackerPresence);
     } catch (err) {
       if (isTokenActive(token)) {
@@ -1117,15 +1062,17 @@ const useProctor = ({
     captureFrame,
     deriveTrackerFacePresence,
     emitAlert,
+    faceDetectionEnabled,
+    headMovementEnabled,
     headPoseBaseline,
     isTokenActive,
     onMlFrame,
     processFaceResult,
     processHeadResult,
-    processGazeResult,
     refreshRecentHeadPoseState,
     refreshMultipleFacesState,
     scheduleBackgroundTasks,
+    visualMonitoringEnabled,
   ]);
 
   const incrementTabSwitch = useCallback(() => {
@@ -1144,16 +1091,12 @@ const useProctor = ({
     countersRef.current.face_mismatch += 1;
   }, []);
 
-  const incrementGazeAway = useCallback(() => {
-    countersRef.current.gaze_away += 1;
-  }, []);
-
   const getCounters = useCallback(() => {
     return { ...countersRef.current };
   }, []);
 
   useEffect(() => {
-    if (!enabled || !sessionId) return;
+    if (!enabled || !sessionId || !visualMonitoringEnabled) return;
     lifecycleTokenRef.current += 1;
     identityStateRef.current = {
       lastVerifiedMatchAt: hasReferenceIdentity ? Date.now() : 0,
@@ -1203,7 +1146,6 @@ const useProctor = ({
       activeFlagsRef.current = {
         faceMissing: false,
         multipleFaces: false,
-        gazeAway: false,
         headTurned: false,
         objectDetected: false,
         cameraFrameUnavailable: false,
@@ -1215,20 +1157,18 @@ const useProctor = ({
         presenceMultipleFaces: 0,
         headTurned: 0,
         headTurnRecovery: 0,
-        gazeAway: 0,
         objectDetected: 0,
         faceMismatch: 0,
         faceVerified: 0,
       };
     };
-  }, [enabled, sessionId, analyzeFrame, hasReferenceIdentity, intervalMs]);
+  }, [enabled, sessionId, analyzeFrame, hasReferenceIdentity, intervalMs, visualMonitoringEnabled]);
 
   return {
     incrementTabSwitch,
     incrementFullscreenExit,
     incrementAudioDetected,
     incrementFaceMismatch,
-    incrementGazeAway,
     getCounters,
     captureFrame,
   };

@@ -7,7 +7,7 @@ sdk: docker
 app_port: 7860
 suggested_hardware: cpu-basic
 startup_duration_timeout: 1h
-short_description: AIProctor ML API for face, gaze, object, and audio checks.
+short_description: AIProctor ML API for face, head, object, and audio checks.
 ---
 
 # AIProctor ML Service
@@ -21,7 +21,6 @@ This repository is prepared for deployment as a Hugging Face Docker Space.
 - `POST /face/detect`
 - `POST /face/reference-embedding`
 - `POST /face/verify`
-- `POST /gaze/analyze`
 - `POST /head/analyze`
 - `POST /objects/detect`
 - `POST /audio/analyze`

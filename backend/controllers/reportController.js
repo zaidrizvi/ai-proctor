@@ -7,6 +7,40 @@ import {
   applyProctorSummaryToSession,
   summarizeProctorEvents,
 } from "../utils/proctorSummary.js";
+import { withNormalizedProctorSettings } from "../utils/proctorSettings.js";
+
+const filterReportEvents = (events = []) =>
+  events.filter((event) => event?.eventType !== "gaze_away");
+
+const buildStudentSafeSession = (session) => {
+  const nextSession = typeof session.toObject === "function" ? session.toObject() : { ...session };
+  const exam = nextSession.exam || null;
+  const totalQuestions = exam?.questions?.length || Number(exam?.totalMarks || 0);
+
+  nextSession.exam = exam
+    ? {
+        _id: exam._id,
+        title: exam.title,
+        subject: exam.subject,
+        duration: exam.duration,
+        passingMarks: exam.passingMarks,
+        totalQuestions,
+        proctorSettings: withNormalizedProctorSettings(exam).proctorSettings,
+      }
+    : null;
+
+  if (nextSession.student) {
+    nextSession.student = {
+      _id: nextSession.student._id,
+      name: nextSession.student.name,
+    };
+  }
+
+  delete nextSession.answers;
+  delete nextSession.verificationFaceImagePath;
+
+  return nextSession;
+};
 
 // @desc    Get full report for a session
 // @route   GET /api/reports/session/:sessionId
@@ -32,13 +66,22 @@ export const getSessionReport = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const events = await ProctorEvent.find({
+    const events = filterReportEvents(await ProctorEvent.find({
       session: session._id,
-    }).sort({ timestamp: 1 });
+    }).sort({ timestamp: 1 }));
 
     const summary = summarizeProctorEvents(events);
+    const summarizedSession = applyProctorSummaryToSession(session, summary);
+
+    if (req.user.role === "student") {
+      return res.json({
+        session: buildStudentSafeSession(summarizedSession),
+        events: [],
+      });
+    }
+
     res.json({
-      session: applyProctorSummaryToSession(session, summary),
+      session: summarizedSession,
       events,
     });
   } catch (error) {
@@ -75,7 +118,9 @@ export const getExamReport = async (req, res) => {
     }, {});
 
     const hydratedSessions = sessions.map((session) => {
-      const summary = summarizeProctorEvents(eventsBySessionId[session._id.toString()] || []);
+      const summary = summarizeProctorEvents(
+        filterReportEvents(eventsBySessionId[session._id.toString()] || [])
+      );
       return applyProctorSummaryToSession(session, summary);
     });
 
@@ -115,10 +160,21 @@ export const getMyResults = async (req, res) => {
       student: req.user._id,
       status: { $in: ["completed", "terminated"] },
     })
-      .populate("exam", "title subject duration")
+      .populate("exam", "title subject duration passingMarks totalMarks")
       .sort({ createdAt: -1 });
 
-    res.json(sessions);
+    res.json(
+      sessions.map((session) => {
+        const plainSession = typeof session.toObject === "function" ? session.toObject() : { ...session };
+        plainSession.exam = plainSession.exam
+          ? {
+              ...plainSession.exam,
+              totalQuestions: Number(plainSession.exam.totalMarks || 0),
+            }
+          : null;
+        return plainSession;
+      })
+    );
   } catch (error) {
     console.error("Get my results error:", error);
     res.status(500).json({ message: "Server error" });
@@ -137,21 +193,17 @@ export const downloadPDFReport = async (req, res) => {
       return res.status(404).json({ message: "Session not found" });
     }
 
-    // auth check
-    if (
-      req.user.role === "student" &&
-      session.student._id.toString() !== req.user._id.toString()
-    ) {
-      return res.status(403).json({ message: "Not authorized" });
+    if (req.user.role === "student") {
+      return res.status(403).json({ message: "Detailed PDF reports are only available to admins" });
     }
 
     if (req.user.role === "admin" && !examOwnedBy(session.exam, req.user._id)) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const events = await ProctorEvent.find({ session: session._id }).sort({
+    const events = filterReportEvents(await ProctorEvent.find({ session: session._id }).sort({
       timestamp: 1,
-    });
+    }));
     const summary = summarizeProctorEvents(events);
 
     const pdfBuffer = await generatePDFReport({

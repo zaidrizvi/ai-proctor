@@ -4,19 +4,22 @@ import { motion, AnimatePresence } from "framer-motion";
 import api from "../../utils/api.js";
 import { getTokenForPath } from "../../utils/authStorage.js";
 import { describeMlError, postMlJson } from "../../utils/mlClient.js";
+import {
+  isProctorEventEnabled,
+  isVisualProctoringEnabled,
+  resolveExamProctorSettings,
+} from "../../utils/proctorSettings.js";
 import { useSocket } from "../../context/SocketContext.jsx";
 import useProctor from "../../hooks/useProctor.js";
 import AudioMonitor from "../proctor/AudioMonitor.jsx";
 import StatusBadge from "../shared/StatusBadge.jsx";
 import {
   FiAlertTriangle,
-  FiCamera,
   FiCameraOff,
   FiCheckCircle,
   FiChevronLeft,
   FiChevronRight,
   FiClock,
-  FiShield,
 } from "react-icons/fi";
 
 void motion;
@@ -35,7 +38,6 @@ const TAB_SWITCH_COOLDOWN_MS = 1500;
 const EVENT_LOG_COOLDOWNS_MS = {
   audio_detected: 1200,
   head_turned: 2000,
-  gaze_away: 7000,
   face_not_detected: 2000,
   camera_frame_unavailable: 8000,
   multiple_faces: 3000,
@@ -81,7 +83,6 @@ const EVENT_LABELS = {
   face_not_detected: "Face Missing",
   camera_frame_unavailable: "Camera Frame Unavailable",
   multiple_faces: "Multiple Faces",
-  gaze_away: "Gaze Away",
   head_turned: "Head Turned",
   audio_detected: "Audio Detected",
   object_detected: "Object Detected",
@@ -202,16 +203,27 @@ const getHeadPoseBaselineStorageKey = (examId, studentId) => {
 };
 
 // ── Webcam Monitor ────────────────────────────────────────────
-const WebcamMonitor = ({ onAlert, videoRef: externalVideoRef, streamRef: externalStreamRef }) => {
+const WebcamMonitor = ({
+  enabled = true,
+  onAlert,
+  videoRef: externalVideoRef,
+  streamRef: externalStreamRef,
+}) => {
   const internalRef = useRef(null);
   const videoRef = externalVideoRef || internalRef;
   const streamRef = useRef(null);
   const [camStatus, setCamStatus] = useState("starting");
 
   useEffect(() => {
+    if (!enabled) {
+      setCamStatus("disabled");
+      stopCamera();
+      return undefined;
+    }
+
     startCamera();
     return () => stopCamera();
-  }, []);
+  }, [enabled]);
 
   const startCamera = async () => {
     try {
@@ -248,7 +260,12 @@ const WebcamMonitor = ({ onAlert, videoRef: externalVideoRef, streamRef: externa
       <div className={`overflow-hidden rounded-[22px] border transition-colors ${
         camStatus === "active" ? "border-emerald-500/30" : "border-red-500/30"
       }`}>
-        {camStatus === "denied" ? (
+        {camStatus === "disabled" ? (
+          <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 bg-[var(--panel-strong)]">
+            <FiCameraOff className="text-2xl text-[var(--app-subtle)]" />
+            <p className="text-xs text-[var(--app-muted)]">Camera disabled</p>
+          </div>
+        ) : camStatus === "denied" ? (
           <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 bg-[var(--panel-strong)]">
             <FiCameraOff className="text-2xl text-red-300" />
             <p className="text-xs text-red-300">Camera denied</p>
@@ -259,12 +276,20 @@ const WebcamMonitor = ({ onAlert, videoRef: externalVideoRef, streamRef: externa
         )}
       </div>
       <div className={`absolute left-2 top-2 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
-        camStatus === "active" ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"
+        camStatus === "active"
+          ? "bg-emerald-500/15 text-emerald-300"
+          : camStatus === "disabled"
+          ? "bg-[var(--panel-bg)] text-[var(--app-muted)]"
+          : "bg-red-500/15 text-red-300"
       }`}>
         <div className={`w-1.5 h-1.5 rounded-full ${
-          camStatus === "active" ? "bg-emerald-400 animate-pulse" : "bg-red-400"
+          camStatus === "active"
+            ? "bg-emerald-400 animate-pulse"
+            : camStatus === "disabled"
+            ? "bg-[var(--app-subtle)]"
+            : "bg-red-400"
         }`} />
-        {camStatus === "active" ? "Live" : "Offline"}
+        {camStatus === "active" ? "Live" : camStatus === "disabled" ? "Disabled" : "Offline"}
       </div>
       
     </div>
@@ -435,9 +460,13 @@ const ExamInterface = () => {
   }, []);
 
   // ── logProctorEvent ─────────────────────────────────────────
-  const logProctorEvent = async (eventType, severity, description) => {
+
+  const logProctorEvent = useCallback(async (eventType, severity, description) => {
     const currentSession = sessionRef.current;
     if (!currentSession) return;
+    if (!isProctorEventEnabled(exam?.proctorSettings, eventType)) {
+      return;
+    }
 
     const cooldown = EVENT_LOG_COOLDOWNS_MS[eventType] ?? 5000;
     const dedupeKey =
@@ -460,13 +489,13 @@ const ExamInterface = () => {
         examId, eventType, severity, description,
       });
     } catch { /* silent fail */ }
-  };
+  }, [exam?.proctorSettings, examId, pushLiveAlert]);
 
   // ── handleWebcamAlert ───────────────────────────────────────
   const handleWebcamAlert = useCallback((eventType, severity, description) => {
     if (eventType === "face_not_detected") faceNotDetectedRef.current += 1;
     logProctorEvent(eventType, severity, description);
-  }, []);
+  }, [logProctorEvent]);
 
   const handleMlFramePreview = useCallback((frame) => {
     if (!SHOW_STUDENT_ML_PREVIEW) {
@@ -542,6 +571,14 @@ const ExamInterface = () => {
     }
   }, [examId, studentId]);
 
+  const proctorSettings = resolveExamProctorSettings(exam?.proctorSettings);
+  const faceDetectionEnabled = proctorSettings.faceDetection;
+  const faceVerificationEnabled = proctorSettings.faceVerification;
+  const headMovementEnabled = proctorSettings.headMovement;
+  const objectDetectionEnabled = proctorSettings.objectDetection;
+  const audioDetectionEnabled = proctorSettings.audioDetection;
+  const visualMonitoringEnabled = isVisualProctoringEnabled(proctorSettings);
+
   // ── useProctor hook ─────────────────────────────────────────
   const {
     incrementTabSwitch,
@@ -554,11 +591,15 @@ const ExamInterface = () => {
     streamRef: webcamStreamRef,
     sessionId: session?._id,
     examId,
-    enabled: examReady && !submitted,
+    enabled: examReady && !submitted && visualMonitoringEnabled,
     referenceFace,
     referenceFaceEmbedding,
     headPoseBaseline,
     suppressHeadTurnAlerts: baselineCalibrationInfo.status !== "ready",
+    faceDetectionEnabled,
+    faceVerificationEnabled,
+    headMovementEnabled,
+    objectDetectionEnabled,
     onAlert: handleWebcamAlert,
     onMlFrame: handleMlFramePreview,
     intervalMs: 800,
@@ -566,12 +607,12 @@ const ExamInterface = () => {
   });
 
   useEffect(() => {
-    if (headPoseBaseline || !studentId) {
+    if (!headMovementEnabled || headPoseBaseline || !studentId) {
       return;
     }
 
     void restoreHeadPoseBaseline();
-  }, [headPoseBaseline, restoreHeadPoseBaseline, studentId]);
+  }, [headMovementEnabled, headPoseBaseline, restoreHeadPoseBaseline, studentId]);
 
   useEffect(() => {
     if (
@@ -593,8 +634,7 @@ const ExamInterface = () => {
   useEffect(() => {
     if (initStartedRef.current) return;
     initStartedRef.current = true;
-    initExam();
-    loadFaceReference();
+    void initExam();
   }, []);
 
   useEffect(() => {
@@ -615,7 +655,13 @@ const ExamInterface = () => {
     lastMlFramePreviewAtRef.current = 0;
   }, [examReady, submitted]);
 
-  const loadFaceReference = async () => {
+  const loadFaceReference = async (settingsOverride = null) => {
+    const effectiveSettings = resolveExamProctorSettings(
+      settingsOverride || exam?.proctorSettings
+    );
+    const effectiveFaceVerificationEnabled = effectiveSettings.faceVerification;
+    const effectiveHeadMovementEnabled = effectiveSettings.headMovement;
+
     try {
       const { data } = await api.get("/auth/me");
       setStudentId(data._id || "");
@@ -623,17 +669,32 @@ const ExamInterface = () => {
       const savedReferenceEmbedding = Array.isArray(data.faceEmbedding) ? data.faceEmbedding : [];
       setReferenceFace(savedReference);
       setReferenceFaceEmbedding(savedReferenceEmbedding);
-      if (savedReference) {
+      if (!effectiveFaceVerificationEnabled && !effectiveHeadMovementEnabled) {
         setIdentityStatus("ready");
-        setIdentityMessage("Reference face is available for verification.");
+        setIdentityMessage("This exam can start without face verification or head baseline setup.");
+      } else if (!effectiveFaceVerificationEnabled) {
+        setIdentityStatus("ready");
+        setIdentityMessage("Face verification is disabled for this exam. Only head baseline setup is required before starting.");
+      } else if (savedReference) {
+        setIdentityStatus(effectiveHeadMovementEnabled ? "ready" : "verified");
+        setIdentityMessage(
+          effectiveHeadMovementEnabled
+            ? "Reference face is available for verification."
+            : "Reference face is available and face verification is the only required check."
+        );
       } else {
         setIdentityStatus("missing");
         setIdentityMessage("No reference face saved yet. Capture one before the exam for identity checks.");
       }
     } catch {
       setStudentId("");
-      setIdentityStatus("unavailable");
-      setIdentityMessage("Profile lookup failed. Face verification will run only if a reference is available.");
+      if (!effectiveFaceVerificationEnabled && !effectiveHeadMovementEnabled) {
+        setIdentityStatus("ready");
+        setIdentityMessage("Exam setup can continue without loading a stored face reference.");
+      } else {
+        setIdentityStatus("unavailable");
+        setIdentityMessage("Profile lookup failed. Face verification will run only if a reference is available.");
+      }
     }
   };
 
@@ -648,6 +709,10 @@ const ExamInterface = () => {
   }, [captureFrame]);
 
   const saveReferenceFace = useCallback(async () => {
+    if (!faceVerificationEnabled) {
+      return { saved: false, reference: "" };
+    }
+
     setStartReady(false);
     pendingVerificationImageRef.current = "";
     const frame = await captureIdentityFrame();
@@ -699,7 +764,7 @@ const ExamInterface = () => {
     } finally {
       setIdentityBusy(false);
     }
-  }, [captureIdentityFrame]);
+  }, [captureIdentityFrame, faceVerificationEnabled]);
 
   const saveVerificationFaceImage = useCallback(async (image, sessionIdOverride = "") => {
     const activeSessionId = sessionIdOverride || session?._id;
@@ -716,6 +781,10 @@ const ExamInterface = () => {
   }, [session?._id]);
 
   const prepareMicrophoneForExam = useCallback(async () => {
+    if (!audioDetectionEnabled) {
+      return true;
+    }
+
     if (microphonePrepared) {
       return true;
     }
@@ -727,7 +796,7 @@ const ExamInterface = () => {
     }
 
     setIdentityStatus("verifying");
-    setIdentityMessage("Allow microphone access to continue with face verification.");
+      setIdentityMessage("Allow microphone access to continue with audio proctoring.");
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -739,12 +808,16 @@ const ExamInterface = () => {
       return true;
     } catch {
       setIdentityStatus("microphone_denied");
-      setIdentityMessage("Microphone access is required before the exam can start. Allow it, then verify again.");
+      setIdentityMessage("Microphone access is required because audio detection is enabled for this exam.");
       return false;
     }
-  }, [microphonePrepared]);
+  }, [audioDetectionEnabled, microphonePrepared]);
 
   const verifyCurrentFace = useCallback(async (referenceOverride = "") => {
+    if (!faceVerificationEnabled) {
+      return { status: "skipped" };
+    }
+
     setStartReady(false);
     pendingVerificationImageRef.current = "";
     const activeReference = referenceOverride || referenceFace;
@@ -796,7 +869,7 @@ const ExamInterface = () => {
     } finally {
       setIdentityBusy(false);
     }
-  }, [captureIdentityFrame, referenceFace, referenceFaceEmbedding, saveVerificationFaceImage]);
+  }, [captureIdentityFrame, faceVerificationEnabled, referenceFace, referenceFaceEmbedding, saveVerificationFaceImage]);
 
   const activateSession = useCallback((activeSession, loadedExam = exam) => {
     if (!activeSession) return;
@@ -847,6 +920,10 @@ const ExamInterface = () => {
   }, [activateSession, examId]);
 
   const calibrateAttentionBaseline = useCallback(async () => {
+    if (!headMovementEnabled) {
+      return { head: null, debug: null };
+    }
+
     const headSamples = [];
     let lastAcceptedHeadSample = null;
     let poseQualityTotal = 0;
@@ -940,9 +1017,23 @@ const ExamInterface = () => {
         consistencyPassed,
       },
     };
-  }, [captureIdentityFrame, examId, session?._id]);
+  }, [captureIdentityFrame, examId, headMovementEnabled, session?._id]);
 
   const queueBaselineCalibration = useCallback(async () => {
+    if (!headMovementEnabled) {
+      setHeadPoseBaseline(null);
+      setBaselineCalibrationInfo({
+        status: "ready",
+        missing: [],
+        debug: null,
+      });
+      return {
+        head: null,
+        ready: true,
+        debug: null,
+      };
+    }
+
     if (isValidHeadPoseBaseline(headPoseBaseline)) {
       setBaselineCalibrationInfo((prev) => ({
         status: "ready",
@@ -997,7 +1088,7 @@ const ExamInterface = () => {
       });
 
     return baselineCalibrationRef.current;
-  }, [baselineCalibrationInfo.debug, calibrateAttentionBaseline, headPoseBaseline]);
+  }, [baselineCalibrationInfo.debug, calibrateAttentionBaseline, headMovementEnabled, headPoseBaseline]);
 
   useEffect(() => {
     if (baselineRetryTimeoutRef.current) {
@@ -1005,7 +1096,7 @@ const ExamInterface = () => {
       baselineRetryTimeoutRef.current = null;
     }
 
-    if (!examReady || submitted) {
+    if (!examReady || submitted || !headMovementEnabled) {
       return undefined;
     }
 
@@ -1038,7 +1129,7 @@ const ExamInterface = () => {
         baselineRetryTimeoutRef.current = null;
       }
     };
-  }, [examReady, submitted, headPoseBaseline, queueBaselineCalibration]);
+  }, [examReady, submitted, headMovementEnabled, headPoseBaseline, queueBaselineCalibration]);
 
   const exitFullscreenSafely = useCallback(async () => {
     fullscreenReadyRef.current = false;
@@ -1131,7 +1222,7 @@ const ExamInterface = () => {
       await exitFullscreenSafely();
     }
 
-    const verificationAlreadyReady = identityStatus === "verified";
+    const verificationAlreadyReady = !faceVerificationEnabled || identityStatus === "verified";
     const microphoneReady = await prepareMicrophoneForExam();
     if (!microphoneReady) {
       return;
@@ -1141,7 +1232,7 @@ const ExamInterface = () => {
     let activeReference = referenceFace;
     let verificationResult = { status: "skipped", verificationImage: "" };
 
-    if (!verificationAlreadyReady && !hasReference) {
+    if (faceVerificationEnabled && !verificationAlreadyReady && !hasReference) {
       const enrollment = await saveReferenceFace();
       hasReference = enrollment.saved;
       activeReference = enrollment.reference;
@@ -1150,7 +1241,7 @@ const ExamInterface = () => {
       }
     }
 
-    if (!verificationAlreadyReady && hasReference) {
+    if (faceVerificationEnabled && !verificationAlreadyReady && hasReference) {
       verificationResult = await verifyCurrentFace(activeReference);
       if (verificationResult.status !== "verified" && verificationResult.status !== "skipped") {
         if (verificationResult.status === "mismatch") {
@@ -1161,26 +1252,49 @@ const ExamInterface = () => {
       }
     }
 
-    if (!verificationAlreadyReady) {
+    if (faceVerificationEnabled && !verificationAlreadyReady) {
       pendingVerificationImageRef.current = verificationResult.verificationImage || "";
     }
 
+    if (!headMovementEnabled) {
+      setStartReady(true);
+      setIdentityStatus(faceVerificationEnabled ? "verified" : "ready");
+      setIdentityMessage(
+        faceVerificationEnabled
+          ? "Face verified. Click once more to enter fullscreen and start the exam."
+          : "Pre-exam checks are complete. Click once more to enter fullscreen and start the exam."
+      );
+      return;
+    }
+
     setIdentityBusy(true);
-    setIdentityStatus("verified");
-    setIdentityMessage("Face verified. Capturing a short head pose baseline before the exam starts...");
+    setIdentityStatus(faceVerificationEnabled ? "verified" : "ready");
+    setIdentityMessage(
+      faceVerificationEnabled
+        ? "Face verified. Capturing a short head pose baseline before the exam starts..."
+        : "Capturing a short head pose baseline before the exam starts..."
+    );
 
     try {
       const baselineResult = await queueBaselineCalibration();
       if (!baselineResult?.ready) {
         setStartReady(false);
-        setIdentityStatus("verified");
-        setIdentityMessage("Face verified, but head pose baseline needs cleaner centered samples. Stay still and click again.");
+        setIdentityStatus(faceVerificationEnabled ? "verified" : "ready");
+        setIdentityMessage(
+          faceVerificationEnabled
+            ? "Face verified, but head pose baseline needs cleaner centered samples. Stay still and click again."
+            : "Head pose baseline needs cleaner centered samples. Stay still and click again."
+        );
         return;
       }
 
       setStartReady(true);
-      setIdentityStatus("verified");
-      setIdentityMessage("Face verified and head pose baseline is ready. Click once more to enter fullscreen and start the exam.");
+      setIdentityStatus(faceVerificationEnabled ? "verified" : "ready");
+      setIdentityMessage(
+        faceVerificationEnabled
+          ? "Face verified and head pose baseline is ready. Click once more to enter fullscreen and start the exam."
+          : "Head pose baseline is ready. Click once more to enter fullscreen and start the exam."
+      );
     } finally {
       setIdentityBusy(false);
     }
@@ -1196,6 +1310,7 @@ const ExamInterface = () => {
       const loadedSession = sessionRes.data.session || null;
 
       setExam(loadedExam);
+      await loadFaceReference(loadedExam.proctorSettings);
       if (loadedSession) {
         activateSession(loadedSession, loadedExam);
       }
@@ -1443,38 +1558,26 @@ const ExamInterface = () => {
     submitExam();
   };
 
-  const baselineMissingLabel = baselineCalibrationInfo.missing.length === 0
-    ? ""
-    : baselineCalibrationInfo.missing[0];
-  const baselineDebugSummary = baselineCalibrationInfo.debug
-    ? [
-      `${baselineCalibrationInfo.debug.acceptedSamples} samples`,
-      `avg quality ${Math.round(Number(baselineCalibrationInfo.debug.averagePoseQuality || 0) * 100)}%`,
-      baselineCalibrationInfo.debug.spread
-        ? `spread yaw ${Number(baselineCalibrationInfo.debug.spread.yaw || 0).toFixed(1)}, pitch ${Number(baselineCalibrationInfo.debug.spread.pitch || 0).toFixed(1)}`
-        : "",
-    ].filter(Boolean).join(", ")
-    : "";
-
-  const baselineCalibrationMessage = baselineCalibrationInfo.status === "ready"
-    ? "Head pose baseline calibrated successfully and is now ready for exam tracking."
-    : baselineCalibrationInfo.status === "calibrating"
-    ? "Capturing a few steady head pose samples while you stay centered..."
-    : baselineCalibrationInfo.status === "retrying"
-    ? `Waiting for cleaner samples. Missing ${baselineMissingLabel} baseline; click again while you stay centered.`
-    : "Head pose baseline will calibrate right after face verification before the exam starts.";
-
   const startActionLabel = identityBusy
     ? "Working..."
     : startReady
     ? "Enter Fullscreen & Start"
-    : identityStatus === "verified"
+    : headMovementEnabled && identityStatus === "verified"
     ? "Finish Baseline"
-    : "Verify Face & Continue";
+    : faceVerificationEnabled
+    ? "Verify Face & Continue"
+    : "Continue to Exam Setup";
 
-  const baselineValueSummary = headPoseBaseline
-    ? `pitch ${Number(headPoseBaseline.pitch).toFixed(1)}, yaw ${Number(headPoseBaseline.yaw).toFixed(1)}, roll ${Number(headPoseBaseline.roll).toFixed(1)}, nose x ${Number(headPoseBaseline.nose_offset_x).toFixed(3)}, nose y ${Number(headPoseBaseline.nose_offset_y).toFixed(3)}`
-    : "";
+  const setupPanelTitle = faceVerificationEnabled && headMovementEnabled
+    ? "Identity & Baseline Check"
+    : faceVerificationEnabled
+    ? "Identity Check"
+    : headMovementEnabled
+    ? "Baseline Check"
+    : audioDetectionEnabled
+    ? "Pre-Exam Check"
+    : "Ready to Start";
+  const showReferenceSetupButton = faceVerificationEnabled && !referenceFace;
 
   const submitExam = async () => {
     setSubmitting(true);
@@ -1545,19 +1648,31 @@ const ExamInterface = () => {
         >
           <div className="grid gap-4 lg:grid-cols-[minmax(0,540px)_minmax(360px,460px)] lg:justify-center lg:items-center">
             <div className="mx-auto w-full max-w-[540px] space-y-3">
-              <div
-                className="rounded-[26px] border p-2.5"
-                style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}
-              >
-                <WebcamMonitor
-                  onAlert={handleWebcamAlert}
-                  videoRef={webcamVideoRef}
-                  streamRef={webcamStreamRef}
-                />
-              </div>
-              <div className="rounded-[20px] border border-amber-500/20 bg-amber-500/8 px-4 py-2.5 text-xs text-amber-200">
-                Keep your face centered and stay still for a few seconds during verification.
-              </div>
+              {visualMonitoringEnabled ? (
+                <>
+                  <div
+                    className="rounded-[26px] border p-2.5"
+                    style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}
+                  >
+                    <WebcamMonitor
+                      enabled={visualMonitoringEnabled}
+                      onAlert={handleWebcamAlert}
+                      videoRef={webcamVideoRef}
+                      streamRef={webcamStreamRef}
+                    />
+                  </div>
+                  <div className="rounded-[20px] border border-amber-500/20 bg-amber-500/8 px-4 py-2.5 text-xs text-amber-200">
+                    Keep your face centered and stay still for a few seconds during setup.
+                  </div>
+                </>
+              ) : (
+                <div
+                  className="rounded-[26px] border px-5 py-6 text-sm text-[var(--app-muted)]"
+                  style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}
+                >
+                  This exam does not use camera-based proctoring.
+                </div>
+              )}
             </div>
 
             <div className="mx-auto w-full max-w-[460px] space-y-3">
@@ -1580,11 +1695,11 @@ const ExamInterface = () => {
 
               <div className="rounded-[24px] border p-4 text-left" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-[var(--app-text)]">Identity & Baseline Check</p>
+                  <p className="text-sm font-semibold text-[var(--app-text)]">{setupPanelTitle}</p>
                   <StatusBadge tone={getIdentityTone(identityStatus)}>{getIdentityLabel(identityStatus)}</StatusBadge>
                 </div>
                 <p className="mt-2.5 text-sm leading-relaxed text-[var(--app-muted)]">{identityMessage}</p>
-                {!referenceFace && (
+                {showReferenceSetupButton && (
                   <button
                     type="button"
                     onClick={() => { void saveReferenceFace(); }}
@@ -1810,48 +1925,58 @@ const ExamInterface = () => {
 
         {/* right sidebar */}
         <div className="theme-panel theme-scrollbar flex w-full flex-col gap-3 overflow-hidden rounded-[32px] p-4 lg:w-[340px] lg:sticky lg:top-[89px] lg:max-h-[calc(100vh-105px)]">
-          <div className="rounded-[28px] border p-3" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
-            <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-muted)]">
-              Proctor Monitor
-            </p>
-            <WebcamMonitor
-              onAlert={handleWebcamAlert}
-              videoRef={webcamVideoRef}
-              streamRef={webcamStreamRef}
-            />
-            <AudioMonitor
-              enabled={examReady && !submitted}
-              showStatus={SHOW_STUDENT_DEBUG_UI}
-              onAudioDetected={(analysis) => {
-                incrementAudioDetected();
-                const rawConfidence = typeof analysis?.raw_backend_speech_confidence === "number"
-                  ? Math.round(analysis.raw_backend_speech_confidence * 100)
-                  : null;
-                const smoothedConfidence = typeof analysis?.frontend_smoothed_confidence === "number"
-                  ? Math.round(analysis.frontend_smoothed_confidence * 100)
-                  : null;
-                const confidenceParts = [];
+          {(visualMonitoringEnabled || audioDetectionEnabled || (SHOW_STUDENT_ML_PREVIEW && mlFramePreview)) && (
+            <div className="rounded-[28px] border p-3" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
+              <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-muted)]">
+                Proctor Monitor
+              </p>
+              {visualMonitoringEnabled ? (
+                <WebcamMonitor
+                  enabled={visualMonitoringEnabled}
+                  onAlert={handleWebcamAlert}
+                  videoRef={webcamVideoRef}
+                  streamRef={webcamStreamRef}
+                />
+              ) : (
+                <div className="rounded-[22px] border px-3 py-3 text-xs text-[var(--app-muted)]" style={{ borderColor: "var(--app-border)", background: "var(--panel-bg)" }}>
+                  Camera monitoring is disabled for this exam.
+                </div>
+              )}
+              {audioDetectionEnabled && (
+                <AudioMonitor
+                  enabled={examReady && !submitted}
+                  showStatus={SHOW_STUDENT_DEBUG_UI}
+                  onAudioDetected={(analysis) => {
+                    incrementAudioDetected();
+                    const rawConfidence = typeof analysis?.raw_backend_speech_confidence === "number"
+                      ? Math.round(analysis.raw_backend_speech_confidence * 100)
+                      : null;
+                    const smoothedConfidence = typeof analysis?.frontend_smoothed_confidence === "number"
+                      ? Math.round(analysis.frontend_smoothed_confidence * 100)
+                      : null;
+                    const confidenceParts = [];
 
-                if (rawConfidence !== null) {
-                  confidenceParts.push(`raw ${rawConfidence}%`);
-                }
+                    if (rawConfidence !== null) {
+                      confidenceParts.push(`raw ${rawConfidence}%`);
+                    }
 
-                if (smoothedConfidence !== null) {
-                  confidenceParts.push(`smoothed ${smoothedConfidence}%`);
-                }
+                    if (smoothedConfidence !== null) {
+                      confidenceParts.push(`smoothed ${smoothedConfidence}%`);
+                    }
 
-                const confidenceSuffix = confidenceParts.length > 0
-                  ? ` (${confidenceParts.join(", ")})`
-                  : "";
+                    const confidenceSuffix = confidenceParts.length > 0
+                      ? ` (${confidenceParts.join(", ")})`
+                      : "";
 
-                logProctorEvent(
-                  "audio_detected",
-                  "medium",
-                  `Speech detected in background${confidenceSuffix}`
-                );
-              }}
-            />
-            {SHOW_STUDENT_ML_PREVIEW && mlFramePreview && (
+                    logProctorEvent(
+                      "audio_detected",
+                      "medium",
+                      `Speech detected in background${confidenceSuffix}`
+                    );
+                  }}
+                />
+              )}
+              {SHOW_STUDENT_ML_PREVIEW && mlFramePreview && (
               <div className="mt-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-200">
@@ -1871,32 +1996,33 @@ const ExamInterface = () => {
                   This is the compressed frame payload currently being posted to the ML endpoints.
                 </p>
               </div>
-            )}
-            {SHOW_STUDENT_DEBUG_UI && liveAlerts.length > 0 && (
-              <div className="mt-3 space-y-2">
-                {liveAlerts.map((alert) => (
-                  <div
-                    key={alert.id}
-                    className={`rounded-2xl border px-3 py-3 text-[11px] ${getSeverityClassName(alert.severity)}`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold tracking-wide">
-                        {EVENT_LABELS[alert.eventType] || alert.eventType}
-                      </span>
-                      <span className="text-[10px] opacity-70">
-                        {new Date(alert.timestamp).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                        })}
-                      </span>
+              )}
+              {SHOW_STUDENT_DEBUG_UI && liveAlerts.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {liveAlerts.map((alert) => (
+                    <div
+                      key={alert.id}
+                      className={`rounded-2xl border px-3 py-3 text-[11px] ${getSeverityClassName(alert.severity)}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold tracking-wide">
+                          {EVENT_LABELS[alert.eventType] || alert.eventType}
+                        </span>
+                        <span className="text-[10px] opacity-70">
+                          {new Date(alert.timestamp).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            second: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                      <p className="mt-1 leading-relaxed opacity-85">{alert.description}</p>
                     </div>
-                    <p className="mt-1 leading-relaxed opacity-85">{alert.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="rounded-[28px] border p-4" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
             <p className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-muted)]">Questions</p>

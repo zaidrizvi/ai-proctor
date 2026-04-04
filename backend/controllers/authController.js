@@ -13,8 +13,32 @@ const buildAuthResponse = (user) => ({
   token: generateToken(user._id, user.role),
 });
 
+const validateFaceReferencePayload = (faceImage, faceEmbedding) => {
+  if (typeof faceImage !== "string" || !faceImage.trim()) {
+    return "Reference face image is required";
+  }
+
+  if (!faceImage.startsWith("data:image/")) {
+    return "Reference face must be a valid image data URL";
+  }
+
+  if (faceImage.length > 1_500_000) {
+    return "Reference face image is too large";
+  }
+
+  if (
+    !Array.isArray(faceEmbedding) ||
+    faceEmbedding.length === 0 ||
+    !faceEmbedding.every((value) => Number.isFinite(value))
+  ) {
+    return "Reference face embedding must be a numeric array";
+  }
+
+  return "";
+};
+
 const registerAccount = async (req, res, enforcedRole) => {
-  const { name, email, password } = req.body;
+  const { name, email, password, faceImage, faceEmbedding } = req.body;
   const role = enforcedRole;
 
   if (!name || !email || !password) {
@@ -44,6 +68,11 @@ const registerAccount = async (req, res, enforcedRole) => {
       return res.status(400).json({ message: "Invalid batch code" });
     }
 
+    const faceReferenceError = validateFaceReferencePayload(faceImage, faceEmbedding);
+    if (faceReferenceError) {
+      return res.status(400).json({ message: faceReferenceError });
+    }
+
     resolvedBatchName = batch.name;
   }
 
@@ -53,6 +82,8 @@ const registerAccount = async (req, res, enforcedRole) => {
     password,
     role,
     batch: role === "student" ? resolvedBatchName : "",
+    faceImagePath: role === "student" ? faceImage : "",
+    faceEmbedding: role === "student" ? faceEmbedding : undefined,
   });
 
   res.status(201).json(buildAuthResponse(user));
@@ -141,27 +172,9 @@ export const saveFaceReference = async (req, res) => {
   try {
     const { faceImage, faceEmbedding } = req.body;
 
-    if (typeof faceImage !== "string" || !faceImage.trim()) {
-      return res.status(400).json({ message: "Reference face image is required" });
-    }
-
-    if (!faceImage.startsWith("data:image/")) {
-      return res.status(400).json({ message: "Reference face must be a valid image data URL" });
-    }
-
-    if (faceImage.length > 1_500_000) {
-      return res.status(400).json({ message: "Reference face image is too large" });
-    }
-
-    if (
-      faceEmbedding !== undefined &&
-      (
-        !Array.isArray(faceEmbedding) ||
-        faceEmbedding.length === 0 ||
-        !faceEmbedding.every((value) => Number.isFinite(value))
-      )
-    ) {
-      return res.status(400).json({ message: "Reference face embedding must be a numeric array" });
+    const validationError = validateFaceReferencePayload(faceImage, faceEmbedding);
+    if (validationError) {
+      return res.status(400).json({ message: validationError });
     }
 
     const user = await User.findByIdAndUpdate(

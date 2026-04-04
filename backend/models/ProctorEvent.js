@@ -22,7 +22,6 @@ const proctorEventSchema = new mongoose.Schema(
       enum: [
         "face_not_detected",
         "multiple_faces",
-        "gaze_away",
         "head_turned",
         "audio_detected",
         "object_detected",
@@ -30,6 +29,7 @@ const proctorEventSchema = new mongoose.Schema(
         "fullscreen_exit",
         "face_mismatch",
         "ml_service_unavailable",
+        "camera_frame_unavailable",
       ],
       required: true,
     },
