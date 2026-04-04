@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import axios from "axios";
 import { FiEye, FiEyeOff, FiLock, FiMail, FiShield, FiUser } from "react-icons/fi";
 import Navbar from "../components/shared/Navbar.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import api from "../utils/api.js";
-import { getMlServiceUrl } from "../utils/mlService.js";
+import { describeMlError, postMlJson } from "../utils/mlClient.js";
 
 void motion;
 const HIGH_QUALITY_VIDEO_CONSTRAINTS = {
@@ -14,7 +13,20 @@ const HIGH_QUALITY_VIDEO_CONSTRAINTS = {
   height: { ideal: 720, min: 480 },
   facingMode: "user",
 };
-const RETRYABLE_ML_STATUS_CODES = new Set([502, 503, 504]);
+const MOBILE_CAPTURE_MAX_WIDTH = 720;
+const DESKTOP_CAPTURE_MAX_WIDTH = 960;
+const MOBILE_CAPTURE_QUALITY = 0.82;
+const DESKTOP_CAPTURE_QUALITY = 0.9;
+
+const isLikelyMobileBrowser = () => {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent || ""
+  );
+};
 
 const RegisterPage = () => {
   const [form, setForm] = useState({ name: "", email: "", password: "", batchCode: "" });
@@ -87,55 +99,36 @@ const RegisterPage = () => {
       return null;
     }
 
+    const captureWidth = isLikelyMobileBrowser()
+      ? MOBILE_CAPTURE_MAX_WIDTH
+      : DESKTOP_CAPTURE_MAX_WIDTH;
+    const captureQuality = isLikelyMobileBrowser()
+      ? MOBILE_CAPTURE_QUALITY
+      : DESKTOP_CAPTURE_QUALITY;
+    const sourceWidth = video.videoWidth || 1280;
+    const sourceHeight = video.videoHeight || 720;
+    const scale = sourceWidth > captureWidth
+      ? captureWidth / sourceWidth
+      : 1;
     const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.95);
+    return canvas.toDataURL("image/jpeg", captureQuality);
   };
 
-  const wait = (ms) => new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-
   const getFaceDetectionErrorMessage = (err) => {
-    const status = Number(err?.response?.status || 0);
-    const detail = err?.response?.data?.detail;
-
-    if (status === 400 && typeof detail === "string") {
-      return detail;
-    }
-
-    if (RETRYABLE_ML_STATUS_CODES.has(status)) {
-      return "Face detection service is waking up. Wait a moment and try again.";
-    }
-
-    if (typeof detail === "string" && detail.trim()) {
-      return detail;
-    }
-
-    if (!navigator.onLine) {
-      return "Internet connection looks offline. Reconnect and try again.";
-    }
-
-    return "Face detection is unavailable right now. Try again.";
+    return describeMlError(err, { actionLabel: "Face detection" });
   };
 
   const detectSingleFace = async (frame) => {
-    const mlUrl = getMlServiceUrl();
-
-    try {
-      return await axios.post(`${mlUrl}/face/detect`, { frame });
-    } catch (err) {
-      const status = Number(err?.response?.status || 0);
-      if (RETRYABLE_ML_STATUS_CODES.has(status)) {
-        await wait(1200);
-        return axios.post(`${mlUrl}/face/detect`, { frame });
-      }
-
-      throw err;
-    }
+    return postMlJson("/face/detect", { frame }, {
+      label: "register.face.detect",
+      retries: 1,
+      timeoutMs: 20000,
+      warmup: true,
+    });
   };
 
   const handleCaptureFace = async () => {
@@ -181,16 +174,21 @@ const RegisterPage = () => {
 
       if (faceImage) {
         try {
-          const { data: embeddingData } = await axios.post(`${getMlServiceUrl()}/face/reference-embedding`, {
+          const { data: embeddingData } = await postMlJson("/face/reference-embedding", {
             frame: faceImage,
+          }, {
+            label: "register.face.reference_embedding",
+            retries: 1,
+            timeoutMs: 20000,
+            warmup: true,
           });
 
           await api.post("/auth/face-reference", {
             faceImage,
             faceEmbedding: Array.isArray(embeddingData.embedding) ? embeddingData.embedding : undefined,
           });
-        } catch {
-          console.warn("Face reference save skipped during registration.");
+        } catch (error) {
+          console.warn("Face reference save skipped during registration:", error?.mlMeta || error);
         }
       }
 

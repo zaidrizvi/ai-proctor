@@ -1,5 +1,4 @@
 const ML_URL_OVERRIDE_KEY = "aiproctor.ml_url_override";
-const DEFAULT_ML_URL = import.meta.env.VITE_ML_URL || "http://localhost:8000";
 
 const normalizeMlUrl = (value) => {
   if (typeof value !== "string") {
@@ -8,6 +7,8 @@ const normalizeMlUrl = (value) => {
 
   return value.trim().replace(/\/+$/, "");
 };
+
+const DEFAULT_ML_URL = normalizeMlUrl(import.meta.env.VITE_ML_URL);
 
 export const setMlServiceUrlOverride = (value) => {
   const normalized = normalizeMlUrl(value);
@@ -41,15 +42,47 @@ export const syncMlServiceUrlOverrideFromLocation = (search = window.location.se
   return setMlServiceUrlOverride(nextMlUrl);
 };
 
-export const getMlServiceUrl = () => {
+export const getMlServiceResolution = () => {
   const urlFromLocation = syncMlServiceUrlOverrideFromLocation();
   if (urlFromLocation) {
-    return urlFromLocation;
+    return {
+      url: urlFromLocation,
+      source: "query_param",
+      hasOverride: true,
+      defaultUrl: DEFAULT_ML_URL,
+    };
   }
 
   const storedOverride = normalizeMlUrl(
     window.localStorage.getItem(ML_URL_OVERRIDE_KEY)
   );
 
-  return storedOverride || DEFAULT_ML_URL;
+  if (storedOverride) {
+    return {
+      url: storedOverride,
+      source: "local_storage",
+      hasOverride: true,
+      defaultUrl: DEFAULT_ML_URL,
+    };
+  }
+
+  if (DEFAULT_ML_URL) {
+    return {
+      url: DEFAULT_ML_URL,
+      source: "env",
+      hasOverride: false,
+      defaultUrl: DEFAULT_ML_URL,
+    };
+  }
+
+  return {
+    url: "",
+    source: "missing",
+    hasOverride: false,
+    defaultUrl: DEFAULT_ML_URL,
+  };
+};
+
+export const getMlServiceUrl = () => {
+  return getMlServiceResolution().url;
 };

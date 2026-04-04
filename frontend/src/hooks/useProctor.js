@@ -1,6 +1,5 @@
 import { useRef, useEffect, useCallback } from "react";
-import axios from "axios";
-import { getMlServiceUrl } from "../utils/mlService.js";
+import { postMlJson } from "../utils/mlClient.js";
 
 const NO_FACE_STREAK_TO_ALERT = 2;
 const FACE_RECOVERY_STREAK = 2;
@@ -42,10 +41,22 @@ const IDENTITY_URGENT_VERIFY_INTERVAL_MS = 600;
 const IDENTITY_MATCH_FRESHNESS_MS = 4500;
 const IDENTITY_COMPROMISE_WINDOW_MS = 2200;
 const DETECTOR_NO_FACE_IDENTITY_GRACE_MS = 450;
-const MAX_CAPTURE_WIDTH = 768;
-const JPEG_QUALITY = 0.72;
+const DESKTOP_CAPTURE_WIDTH = 768;
+const MOBILE_CAPTURE_WIDTH = 640;
+const DESKTOP_JPEG_QUALITY = 0.72;
+const MOBILE_JPEG_QUALITY = 0.68;
 const PRIORITY_SUSPICIOUS_OBJECTS = new Set(["cell phone", "book", "remote"]);
 const GAZE_TRACKING_ENABLED = false;
+
+const isLikelyMobileBrowser = () => {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent || ""
+  );
+};
 
 const useProctor = ({
   videoRef,
@@ -245,9 +256,16 @@ const useProctor = ({
   }, [refreshMultipleFacesState]);
 
   const captureFrame = useCallback(async () => {
+    const captureWidth = isLikelyMobileBrowser()
+      ? MOBILE_CAPTURE_WIDTH
+      : DESKTOP_CAPTURE_WIDTH;
+    const captureQuality = isLikelyMobileBrowser()
+      ? MOBILE_JPEG_QUALITY
+      : DESKTOP_JPEG_QUALITY;
+
     const drawToDataUrl = (source, sourceWidth, sourceHeight) => {
-      const scale = sourceWidth > MAX_CAPTURE_WIDTH
-        ? MAX_CAPTURE_WIDTH / sourceWidth
+      const scale = sourceWidth > captureWidth
+        ? captureWidth / sourceWidth
         : 1;
       const canvas = captureCanvasRef.current || document.createElement("canvas");
       captureCanvasRef.current = canvas;
@@ -255,7 +273,7 @@ const useProctor = ({
       canvas.height = Math.max(1, Math.round(sourceHeight * scale));
       const ctx = canvas.getContext("2d");
       ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-      return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
+      return canvas.toDataURL("image/jpeg", captureQuality);
     };
 
     const videoTrack = streamRef?.current?.getVideoTracks?.()[0];
@@ -848,17 +866,20 @@ const useProctor = ({
       !objectAnalysisInFlightRef.current &&
       now - lastObjectCheckAtRef.current >= OBJECT_ANALYSIS_INTERVAL_MS
     ) {
-      const mlUrl = getMlServiceUrl();
       objectAnalysisInFlightRef.current = true;
       lastObjectCheckAtRef.current = now;
 
-      void axios.post(`${mlUrl}/objects/detect`, { frame })
+      void postMlJson("/objects/detect", { frame }, {
+        label: "proctor.objects.detect",
+        timeoutMs: 10000,
+        warmup: true,
+      })
         .then((response) => {
           processObjectResult(response, token);
         })
         .catch((error) => {
           if (isTokenActive(token)) {
-            console.warn("ML objects check failed:", error?.message || error);
+            console.warn("ML objects check failed:", error?.mlMeta || error);
           }
         })
         .finally(() => {
@@ -897,19 +918,22 @@ const useProctor = ({
 
     verifyAnalysisInFlightRef.current = true;
     lastIdentityCheckRef.current = Date.now();
-    const mlUrl = getMlServiceUrl();
 
-    void axios.post(`${mlUrl}/face/verify`, {
+    void postMlJson("/face/verify", {
       frame,
       reference: referenceFace,
       reference_embedding: referenceFaceEmbedding,
+    }, {
+      label: "proctor.face.verify",
+      timeoutMs: 12000,
+      warmup: true,
     })
       .then((response) => {
         processVerifyResult(response, token);
       })
       .catch((error) => {
         if (isTokenActive(token)) {
-          console.warn("ML verify check failed:", error?.message || error);
+          console.warn("ML verify check failed:", error?.mlMeta || error);
         }
       })
       .finally(() => {
@@ -994,16 +1018,26 @@ const useProctor = ({
       activeFlagsRef.current.cameraFrameUnavailable = false;
       onMlFrame?.(frame);
       analysisCycleRef.current += 1;
-      const mlUrl = getMlServiceUrl();
 
       const criticalRequests = [
-        { key: "face", promise: axios.post(`${mlUrl}/face/detect`, { frame }) },
+        {
+          key: "face",
+          promise: postMlJson("/face/detect", { frame }, {
+            label: "proctor.face.detect",
+            timeoutMs: 10000,
+            warmup: true,
+          }),
+        },
         {
           key: "head",
-          promise: axios.post(`${mlUrl}/head/analyze`, {
+          promise: postMlJson("/head/analyze", {
             frame,
             baseline: headPoseBaseline,
             tracker_id: sessionId || examId || "default",
+          }, {
+            label: "proctor.head.analyze",
+            timeoutMs: 10000,
+            warmup: true,
           }),
         },
       ];
@@ -1011,8 +1045,12 @@ const useProctor = ({
       if (GAZE_TRACKING_ENABLED) {
         criticalRequests.push({
           key: "gaze",
-          promise: axios.post(`${mlUrl}/gaze/analyze`, {
+          promise: postMlJson("/gaze/analyze", {
             frame,
+          }, {
+            label: "proctor.gaze.analyze",
+            timeoutMs: 10000,
+            warmup: true,
           }),
         });
       }
@@ -1032,7 +1070,7 @@ const useProctor = ({
           if (isTokenActive(token)) {
             console.warn(
               `ML ${criticalRequests[index].key} check failed:`,
-              result.reason?.message || result.reason
+              result.reason?.mlMeta || result.reason?.message || result.reason
             );
           }
         }
@@ -1067,7 +1105,7 @@ const useProctor = ({
       scheduleBackgroundTasks(frame, token, faceState, trackerPresence);
     } catch (err) {
       if (isTokenActive(token)) {
-        console.warn("ML analysis failed:", err.message);
+        console.warn("ML analysis failed:", err?.mlMeta || err?.message || err);
       }
     } finally {
       if (token === lifecycleTokenRef.current) {

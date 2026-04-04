@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import axios from "axios";
 import api from "../../utils/api.js";
 import { getTokenForPath } from "../../utils/authStorage.js";
-import { getMlServiceUrl } from "../../utils/mlService.js";
+import { describeMlError, postMlJson } from "../../utils/mlClient.js";
 import { useSocket } from "../../context/SocketContext.jsx";
 import useProctor from "../../hooks/useProctor.js";
 import AudioMonitor from "../proctor/AudioMonitor.jsx";
@@ -659,8 +658,13 @@ const ExamInterface = () => {
     setIdentityMessage("Checking the captured frame before saving it as the reference face...");
 
     try {
-      const { data: embeddingResult } = await axios.post(`${getMlServiceUrl()}/face/reference-embedding`, {
+      const { data: embeddingResult } = await postMlJson("/face/reference-embedding", {
         frame,
+      }, {
+        label: "exam.face.reference_embedding",
+        retries: 1,
+        timeoutMs: 20000,
+        warmup: true,
       });
 
       if (!embeddingResult.embedding_created || !Array.isArray(embeddingResult.embedding)) {
@@ -684,9 +688,10 @@ const ExamInterface = () => {
       setIdentityMessage("Reference face saved. Identity verification is ready.");
       return { saved: true, reference: savedReference };
     } catch (err) {
-      const message =
-        err.response?.data?.message ||
-        "Reference face could not be saved right now. Retry after the verification service is available.";
+      const message = err?.mlMeta
+        ? describeMlError(err, { actionLabel: "Reference face setup" })
+        : err.response?.data?.message ||
+          "Reference face could not be saved right now. Retry after the verification service is available.";
 
       setIdentityStatus("save_failed");
       setIdentityMessage(message);
@@ -758,10 +763,15 @@ const ExamInterface = () => {
     setIdentityMessage("Verifying your face against the saved reference...");
 
     try {
-      const { data } = await axios.post(`${getMlServiceUrl()}/face/verify`, {
+      const { data } = await postMlJson("/face/verify", {
         frame,
         reference: activeReference,
         reference_embedding: referenceFaceEmbedding,
+      }, {
+        label: "exam.face.verify",
+        retries: 1,
+        timeoutMs: 20000,
+        warmup: true,
       });
 
       if (!data.verification_checked) {
@@ -779,9 +789,9 @@ const ExamInterface = () => {
       setIdentityStatus("mismatch");
       setIdentityMessage("Saved reference does not match the current webcam frame. Retry before starting.");
       return { status: "mismatch", data };
-    } catch {
+    } catch (error) {
       setIdentityStatus("service_unavailable");
-      setIdentityMessage("ML verification service is unavailable. Retry verification before starting the exam.");
+      setIdentityMessage(describeMlError(error, { actionLabel: "Face verification" }));
       return { status: "unavailable" };
     } finally {
       setIdentityBusy(false);
@@ -851,9 +861,14 @@ const ExamInterface = () => {
       }
 
       try {
-        const { data: headData } = await axios.post(`${getMlServiceUrl()}/head/analyze`, {
+        const { data: headData } = await postMlJson("/head/analyze", {
           frame,
           tracker_id: session?._id || examId || "default",
+        }, {
+          label: "exam.head.baseline",
+          retries: 1,
+          timeoutMs: 16000,
+          warmup: true,
         });
 
         if (
@@ -893,7 +908,9 @@ const ExamInterface = () => {
             }
           }
         }
-      } catch {}
+      } catch (error) {
+        console.warn("Baseline head-pose sample failed:", error?.mlMeta || error);
+      }
 
       await new Promise((resolve) => window.setTimeout(resolve, BASELINE_CAPTURE_PAUSE_MS));
     }

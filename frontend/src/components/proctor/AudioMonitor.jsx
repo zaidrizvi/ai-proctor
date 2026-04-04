@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import axios from "axios";
-import { getMlServiceUrl } from "../../utils/mlService.js";
+import { postMlJson } from "../../utils/mlClient.js";
 
 const ANALYSIS_INTERVAL_MS = 650;
 const MAX_ANALYSIS_WINDOW_MS = 950;
@@ -214,7 +213,11 @@ const AudioMonitor = ({ onAudioDetected, enabled = true, showStatus = true }) =>
       try {
         const wavBytes = encodeWav(chunk, sampleRate);
         const audio = `data:audio/wav;base64,${uint8ToBase64(wavBytes)}`;
-        const { data } = await axios.post(`${getMlServiceUrl()}/audio/analyze`, { audio });
+        const { data } = await postMlJson("/audio/analyze", { audio }, {
+          label: "audio.analyze",
+          timeoutMs: 12000,
+          warmup: true,
+        });
 
         if (cancelled) return;
 
@@ -291,8 +294,9 @@ const AudioMonitor = ({ onAudioDetected, enabled = true, showStatus = true }) =>
         } else {
           setStatus("listening");
         }
-      } catch {
+      } catch (error) {
         if (!cancelled) {
+          console.warn("ML audio check failed:", error?.mlMeta || error);
           setStatus("error");
         }
       } finally {
