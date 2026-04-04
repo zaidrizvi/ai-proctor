@@ -23,17 +23,16 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
       <div className="pointer-events-none absolute inset-0 opacity-90" style={{ background: "var(--app-gradient)" }} />
 
       {sidebarOpen && (
-        <button
-          type="button"
-          aria-label="Close menu overlay"
-          className="fixed inset-0 z-40 bg-black/35 backdrop-blur-none lg:hidden"
+        <div
+          aria-hidden="true"
+          className="fixed inset-0 z-30 bg-black/35 backdrop-blur-none lg:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       <div className="relative z-10 flex min-h-screen">
         <aside
-          className={`fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r px-4 py-4 transition-transform duration-300 backdrop-blur-none lg:static lg:translate-x-0 lg:backdrop-blur-xl ${
+          className={`fixed inset-y-0 left-0 z-[70] flex w-[17rem] touch-manipulation flex-col border-r px-4 py-4 transition-transform duration-300 backdrop-blur-none pointer-events-auto lg:static lg:z-auto lg:translate-x-0 lg:backdrop-blur-xl ${
             sidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
           style={{
@@ -85,7 +84,7 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
             </div>
           </div>
 
-          <nav className="space-y-1.5">
+          <nav className="space-y-1.5 pointer-events-auto">
             {navItems.map(({ path, label, icon: Icon, caption }) => {
               const isActive =
                 currentPath === path ||
@@ -99,7 +98,7 @@ const AppShell = ({ sectionLabel, navItems, basePath, children }) => {
                     navigate(`${basePath}/${path}`);
                     setSidebarOpen(false);
                   }}
-                  className="group flex w-full items-center gap-3 rounded-[20px] border px-3.5 py-3 text-left transition-all duration-200"
+                  className="group flex w-full touch-manipulation items-center gap-3 rounded-[20px] border px-3.5 py-3 text-left transition-all duration-200"
                   style={{
                     background: isActive ? "var(--nav-active-bg)" : "var(--panel-soft)",
                     borderColor: isActive ? "var(--nav-active-border)" : "transparent",
