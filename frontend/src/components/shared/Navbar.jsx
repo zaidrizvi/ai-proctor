@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { FiLogOut, FiMenu, FiMoon, FiSun } from "react-icons/fi";
+import { FiLogOut, FiMenu, FiMoon, FiSun, FiX } from "react-icons/fi";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { useTheme } from "../../context/ThemeContext.jsx";
 
@@ -14,6 +15,7 @@ const Navbar = ({
   const location = useLocation();
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const [mobileAuthMenuOpen, setMobileAuthMenuOpen] = useState(false);
 
   const isAuthPage =
     location.pathname === "/login" ||
@@ -24,6 +26,10 @@ const Navbar = ({
     logout();
     navigate("/login");
   };
+
+  useEffect(() => {
+    setMobileAuthMenuOpen(false);
+  }, [location.pathname]);
 
   const leftEyebrow = showBrand
     ? "Secure exam platform"
@@ -42,7 +48,7 @@ const Navbar = ({
   return (
     <header className="sticky top-0 z-30 px-3 pt-3 sm:px-5 lg:px-5">
       <nav
-        className="mx-auto flex items-center justify-between gap-3 rounded-[24px] border px-4 py-2.5 backdrop-blur-none sm:px-5 sm:backdrop-blur-2xl"
+        className="mx-auto relative flex items-center justify-between gap-3 rounded-[24px] border px-4 py-2.5 backdrop-blur-none sm:px-5 sm:backdrop-blur-2xl"
         style={{
           background: "var(--shell-topbar)",
           borderColor: "var(--app-border)",
@@ -79,6 +85,19 @@ const Navbar = ({
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3">
+          {isAuthPage && !user && (
+            <button
+              type="button"
+              onClick={() => setMobileAuthMenuOpen((current) => !current)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border sm:hidden"
+              style={{ borderColor: "var(--app-border)", background: "var(--panel-soft)", color: "var(--app-text)" }}
+              aria-label={mobileAuthMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+              aria-expanded={mobileAuthMenuOpen}
+            >
+              {mobileAuthMenuOpen ? <FiX className="text-base" /> : <FiMenu className="text-base" />}
+            </button>
+          )}
+
           {isAuthPage && !user && (
             <div className="hidden items-center gap-2 sm:flex">
               <Link
@@ -153,6 +172,50 @@ const Navbar = ({
             </>
           )}
         </div>
+
+        {isAuthPage && !user && mobileAuthMenuOpen && (
+          <div
+            className="absolute left-3 right-3 top-[calc(100%+0.6rem)] rounded-[24px] border p-2 sm:hidden"
+            style={{
+              background: "var(--shell-topbar)",
+              borderColor: "var(--app-border)",
+              boxShadow: "var(--panel-shadow)",
+            }}
+          >
+            <div className="flex flex-col gap-1">
+              <Link
+                to="/login"
+                className="rounded-2xl px-4 py-3 text-sm font-medium transition-colors"
+                style={{
+                  background: location.pathname === "/login" ? "var(--panel-soft)" : "transparent",
+                  color: "var(--app-text)",
+                }}
+              >
+                Login
+              </Link>
+              <Link
+                to="/register"
+                className="rounded-2xl px-4 py-3 text-sm font-medium"
+                style={{
+                  background: location.pathname === "/register" ? "var(--accent-soft)" : "transparent",
+                  color: location.pathname === "/register" ? "var(--accent-strong)" : "var(--app-text)",
+                }}
+              >
+                Student Signup
+              </Link>
+              <Link
+                to="/register/admin"
+                className="rounded-2xl px-4 py-3 text-sm font-medium"
+                style={{
+                  background: location.pathname === "/register/admin" ? "var(--accent-soft)" : "transparent",
+                  color: location.pathname === "/register/admin" ? "var(--accent-strong)" : "var(--app-text)",
+                }}
+              >
+                Admin Signup
+              </Link>
+            </div>
+          </div>
+        )}
       </nav>
     </header>
   );
