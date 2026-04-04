@@ -4,7 +4,8 @@ import { motion } from "framer-motion";
 import { FiEye, FiEyeOff, FiLock, FiMail, FiShield, FiUser } from "react-icons/fi";
 import Navbar from "../components/shared/Navbar.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { describeMlError, postMlJson } from "../utils/mlClient.js";
+import { createJpegBlobFromSource, blobToDataUrl } from "../utils/imageCapture.js";
+import { describeMlError, postMlMultipart } from "../utils/mlClient.js";
 
 void motion;
 const HIGH_QUALITY_VIDEO_CONSTRAINTS = {
@@ -34,6 +35,7 @@ const RegisterPage = () => {
   const [capturingFace, setCapturingFace] = useState(false);
   const [error, setError] = useState("");
   const [faceImage, setFaceImage] = useState("");
+  const [faceImageBlob, setFaceImageBlob] = useState(null);
   const [cameraStatus, setCameraStatus] = useState("idle");
 
   const videoRef = useRef(null);
@@ -91,7 +93,7 @@ const RegisterPage = () => {
     streamRef.current = null;
   };
 
-  const captureCurrentFrame = () => {
+  const captureCurrentFrame = async () => {
     const video = videoRef.current;
     if (!video || video.readyState !== 4) {
       setError("Camera is not ready yet. Wait a moment and try again.");
@@ -106,15 +108,10 @@ const RegisterPage = () => {
       : DESKTOP_CAPTURE_QUALITY;
     const sourceWidth = video.videoWidth || 1280;
     const sourceHeight = video.videoHeight || 720;
-    const scale = sourceWidth > captureWidth
-      ? captureWidth / sourceWidth
-      : 1;
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
-    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", captureQuality);
+    return createJpegBlobFromSource(video, sourceWidth, sourceHeight, {
+      maxWidth: captureWidth,
+      quality: captureQuality,
+    });
   };
 
   const getFaceDetectionErrorMessage = (err) => {
@@ -122,7 +119,7 @@ const RegisterPage = () => {
   };
 
   const detectSingleFace = async (frame) => {
-    return postMlJson("/face/detect", { frame }, {
+    return postMlMultipart("/face/detect", { frame }, {
       label: "register.face.detect",
       retries: 1,
       timeoutMs: 20000,
@@ -132,7 +129,7 @@ const RegisterPage = () => {
 
   const handleCaptureFace = async () => {
     setError("");
-    const frame = captureCurrentFrame();
+    const frame = await captureCurrentFrame();
     if (!frame) return;
 
     try {
@@ -143,7 +140,8 @@ const RegisterPage = () => {
         return;
       }
 
-      setFaceImage(frame);
+      setFaceImageBlob(frame);
+      setFaceImage(await blobToDataUrl(frame));
     } catch (err) {
       setError(getFaceDetectionErrorMessage(err));
     } finally {
@@ -157,7 +155,7 @@ const RegisterPage = () => {
     setLoading(true);
 
     try {
-      if (!faceImage) {
+      if (!faceImageBlob) {
         setError("Capture your face before creating a student account.");
         setLoading(false);
         return;
@@ -169,8 +167,8 @@ const RegisterPage = () => {
         return;
       }
 
-      const { data: embeddingData } = await postMlJson("/face/reference-embedding", {
-        frame: faceImage,
+      const { data: embeddingData } = await postMlMultipart("/face/reference-embedding", {
+        frame: faceImageBlob,
       }, {
         label: "register.face.reference_embedding",
         retries: 1,
@@ -184,12 +182,14 @@ const RegisterPage = () => {
         return;
       }
 
+      const faceImageDataUrl = faceImage || await blobToDataUrl(faceImageBlob);
+
       await registerStudent({
         name: form.name,
         email: form.email,
         password: form.password,
         batchCode: form.batchCode,
-        faceImage,
+        faceImage: faceImageDataUrl,
         faceEmbedding: embeddingData.embedding,
       });
 
@@ -433,14 +433,17 @@ const RegisterPage = () => {
                         >
                           {capturingFace
                             ? "Checking face..."
-                            : faceImage
+                            : faceImageBlob
                             ? "Retake Face"
                             : "Capture Face"}
                         </button>
                         <button
                           type="button"
-                          onClick={() => setFaceImage("")}
-                          disabled={loading || capturingFace || !faceImage}
+                          onClick={() => {
+                            setFaceImage("");
+                            setFaceImageBlob(null);
+                          }}
+                          disabled={loading || capturingFace || !faceImageBlob}
                           className="rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm font-medium text-[var(--app-muted)] transition hover:bg-[var(--panel-soft)] disabled:opacity-50"
                         >
                           Clear

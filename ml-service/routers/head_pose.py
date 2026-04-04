@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 import numpy as np
 import cv2
@@ -9,7 +9,7 @@ import traceback
 from threading import Lock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.frame_utils import base64_to_frame
+from utils.frame_utils import get_frame_from_payload, parse_json_field, parse_request_payload
 
 router = APIRouter()
 _image_face_landmarker = None
@@ -68,12 +68,6 @@ class HeadPoseBaseline(BaseModel):
     roll: float = 0.0
     nose_offset_x: float
     nose_offset_y: float
-
-
-class FrameRequest(BaseModel):
-    frame: str
-    baseline: HeadPoseBaseline | None = None
-    tracker_id: str | None = None
 
 
 def get_mediapipe_tasks():
@@ -614,10 +608,14 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
 
 
 @router.post("/analyze")
-async def analyze_head_pose(req: FrameRequest):
+async def analyze_head_pose(request: Request):
     try:
-        frame = base64_to_frame(req.frame)
-        pose = get_head_pose(frame, req.tracker_id)
+        payload, _ = await parse_request_payload(request)
+        frame = await get_frame_from_payload(payload, "frame")
+        baseline_payload = parse_json_field(payload.get("baseline"), "baseline")
+        baseline = HeadPoseBaseline(**baseline_payload) if baseline_payload else None
+        tracker_id = payload.get("tracker_id")
+        pose = get_head_pose(frame, tracker_id)
 
         if pose is None:
             return {
@@ -635,10 +633,10 @@ async def analyze_head_pose(req: FrameRequest):
                 "nose_offset_y_delta": 0,
                 "looking_away": False,
                 "event": None,
-                "baseline_applied": req.baseline is not None,
+                "baseline_applied": baseline is not None,
             }
 
-        looking_away, obvious_turn, turn_axis, downward_signal, deltas, metrics, combined_score, debug = classify_looking_away(pose, req.baseline)
+        looking_away, obvious_turn, turn_axis, downward_signal, deltas, metrics, combined_score, debug = classify_looking_away(pose, baseline)
 
         return {
             "tracking_available": True,
@@ -657,7 +655,7 @@ async def analyze_head_pose(req: FrameRequest):
             "downward_signal": downward_signal,
             "looking_away": looking_away,
             "event": "head_turned" if looking_away else None,
-            "baseline_applied": req.baseline is not None,
+            "baseline_applied": baseline is not None,
             "threshold_path_used": debug["threshold_path_used"],
             "movement_reason": debug["movement_reason"],
             "signal_reasons": debug["signal_reasons"],

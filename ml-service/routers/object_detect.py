@@ -1,10 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.frame_utils import base64_to_frame
+from utils.frame_utils import get_frame_from_payload, parse_request_payload
 
 router = APIRouter()
 
@@ -341,13 +341,11 @@ def _get_counted_person_detections(person_detections: list[dict]) -> tuple[list[
 
     return counted_people, count_debug
 
-class FrameRequest(BaseModel):
-    frame: str
-
 @router.post("/detect")
-async def detect_objects(req: FrameRequest):
+async def detect_objects(request: Request):
     try:
-        frame = base64_to_frame(req.frame)
+        payload, _ = await parse_request_payload(request)
+        frame = await get_frame_from_payload(payload, "frame")
         frame_h, frame_w = frame.shape[:2]
         frame_area = max(float(frame_h * frame_w), 1.0)
         yolo = get_model()

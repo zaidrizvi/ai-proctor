@@ -3,7 +3,8 @@ import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import api from "../../utils/api.js";
 import { getTokenForPath } from "../../utils/authStorage.js";
-import { describeMlError, postMlJson } from "../../utils/mlClient.js";
+import { blobToDataUrl } from "../../utils/imageCapture.js";
+import { describeMlError, postMlMultipart } from "../../utils/mlClient.js";
 import {
   isProctorEventEnabled,
   isVisualProctoringEnabled,
@@ -360,6 +361,7 @@ const ExamInterface = () => {
   const answersRef = useRef({});
   const currentQRef = useRef(0);
   const lastMlFramePreviewAtRef = useRef(0);
+  const mlFramePreviewUrlRef = useRef("");
   const baselineRetryTimeoutRef = useRef(null);
 
   // state
@@ -508,7 +510,12 @@ const ExamInterface = () => {
     }
 
     lastMlFramePreviewAtRef.current = now;
-    setMlFramePreview(frame);
+    if (mlFramePreviewUrlRef.current) {
+      URL.revokeObjectURL(mlFramePreviewUrlRef.current);
+    }
+    const previewUrl = URL.createObjectURL(frame);
+    mlFramePreviewUrlRef.current = previewUrl;
+    setMlFramePreview(previewUrl);
   }, []);
 
   const persistHeadPoseBaseline = useCallback((baseline, debug = null) => {
@@ -651,9 +658,22 @@ const ExamInterface = () => {
 
   useEffect(() => {
     if (examReady && !submitted) return;
+    if (mlFramePreviewUrlRef.current) {
+      URL.revokeObjectURL(mlFramePreviewUrlRef.current);
+      mlFramePreviewUrlRef.current = "";
+    }
     setMlFramePreview("");
     lastMlFramePreviewAtRef.current = 0;
   }, [examReady, submitted]);
+
+  useEffect(() => {
+    return () => {
+      if (mlFramePreviewUrlRef.current) {
+        URL.revokeObjectURL(mlFramePreviewUrlRef.current);
+        mlFramePreviewUrlRef.current = "";
+      }
+    };
+  }, []);
 
   const loadFaceReference = async (settingsOverride = null) => {
     const effectiveSettings = resolveExamProctorSettings(
@@ -723,7 +743,7 @@ const ExamInterface = () => {
     setIdentityMessage("Checking the captured frame before saving it as the reference face...");
 
     try {
-      const { data: embeddingResult } = await postMlJson("/face/reference-embedding", {
+      const { data: embeddingResult } = await postMlMultipart("/face/reference-embedding", {
         frame,
       }, {
         label: "exam.face.reference_embedding",
@@ -738,11 +758,12 @@ const ExamInterface = () => {
         return { saved: false, reference: "" };
       }
 
+      const frameDataUrl = await blobToDataUrl(frame);
       const { data } = await api.post("/auth/face-reference", {
-        faceImage: frame,
+        faceImage: frameDataUrl,
         faceEmbedding: embeddingResult.embedding,
       });
-      const savedReference = data.faceImagePath || frame;
+      const savedReference = data.faceImagePath || frameDataUrl;
       const savedReferenceEmbedding = Array.isArray(data.faceEmbedding)
         ? data.faceEmbedding
         : embeddingResult.embedding;
@@ -836,10 +857,13 @@ const ExamInterface = () => {
     setIdentityMessage("Verifying your face against the saved reference...");
 
     try {
-      const { data } = await postMlJson("/face/verify", {
+      const { data } = await postMlMultipart("/face/verify", {
         frame,
-        reference: activeReference,
-        reference_embedding: referenceFaceEmbedding,
+        ...(referenceFaceEmbedding.length > 0
+          ? { reference_embedding: referenceFaceEmbedding }
+          : activeReference
+          ? { reference: activeReference }
+          : {}),
       }, {
         label: "exam.face.verify",
         retries: 1,
@@ -856,7 +880,10 @@ const ExamInterface = () => {
       if (data.verified) {
         setIdentityStatus("verified");
         setIdentityMessage("Face verified. You can begin the exam.");
-        return { status: "verified", verificationImage: frame };
+        return {
+          status: "verified",
+          verificationImage: await blobToDataUrl(frame),
+        };
       }
 
       setIdentityStatus("mismatch");
@@ -938,7 +965,7 @@ const ExamInterface = () => {
       }
 
       try {
-        const { data: headData } = await postMlJson("/head/analyze", {
+        const { data: headData } = await postMlMultipart("/head/analyze", {
           frame,
           tracker_id: session?._id || examId || "default",
         }, {

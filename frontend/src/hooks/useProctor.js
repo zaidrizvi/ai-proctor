@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback } from "react";
-import { postMlJson } from "../utils/mlClient.js";
+import { createJpegBlobFromSource } from "../utils/imageCapture.js";
+import { postMlMultipart } from "../utils/mlClient.js";
 
 const NO_FACE_STREAK_TO_ALERT = 2;
 const FACE_RECOVERY_STREAK = 2;
@@ -266,17 +267,14 @@ const useProctor = ({
       ? MOBILE_JPEG_QUALITY
       : DESKTOP_JPEG_QUALITY;
 
-    const drawToDataUrl = (source, sourceWidth, sourceHeight) => {
-      const scale = sourceWidth > captureWidth
-        ? captureWidth / sourceWidth
-        : 1;
+    const drawToBlob = (source, sourceWidth, sourceHeight) => {
       const canvas = captureCanvasRef.current || document.createElement("canvas");
       captureCanvasRef.current = canvas;
-      canvas.width = Math.max(1, Math.round(sourceWidth * scale));
-      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-      return canvas.toDataURL("image/jpeg", captureQuality);
+      return createJpegBlobFromSource(source, sourceWidth, sourceHeight, {
+        canvas,
+        maxWidth: captureWidth,
+        quality: captureQuality,
+      });
     };
 
     const videoTrack = streamRef?.current?.getVideoTracks?.()[0];
@@ -284,7 +282,7 @@ const useProctor = ({
       try {
         const imageCapture = new ImageCapture(videoTrack);
         const bitmap = await imageCapture.grabFrame();
-        const frame = drawToDataUrl(
+        const frame = await drawToBlob(
           bitmap,
           bitmap.width || 1280,
           bitmap.height || 720
@@ -301,7 +299,7 @@ const useProctor = ({
     if (video.readyState < 2) return null;
     if (!video.videoWidth || !video.videoHeight) return null;
 
-    return drawToDataUrl(
+    return drawToBlob(
       video,
       video.videoWidth || 1280,
       video.videoHeight || 720
@@ -819,7 +817,7 @@ const useProctor = ({
       objectAnalysisInFlightRef.current = true;
       lastObjectCheckAtRef.current = now;
 
-      void postMlJson("/objects/detect", { frame }, {
+      void postMlMultipart("/objects/detect", { frame }, {
         label: "proctor.objects.detect",
         timeoutMs: 10000,
         warmup: true,
@@ -870,10 +868,13 @@ const useProctor = ({
     verifyAnalysisInFlightRef.current = true;
     lastIdentityCheckRef.current = Date.now();
 
-    void postMlJson("/face/verify", {
+    void postMlMultipart("/face/verify", {
       frame,
-      reference: referenceFace,
-      reference_embedding: referenceFaceEmbedding,
+      ...(referenceFaceEmbedding.length > 0
+        ? { reference_embedding: referenceFaceEmbedding }
+        : referenceFace
+        ? { reference: referenceFace }
+        : {}),
     }, {
       label: "proctor.face.verify",
       timeoutMs: 12000,
@@ -965,7 +966,7 @@ const useProctor = ({
         ...(faceDetectionEnabled
           ? [{
               key: "face",
-              promise: postMlJson("/face/detect", { frame }, {
+              promise: postMlMultipart("/face/detect", { frame }, {
                 label: "proctor.face.detect",
                 timeoutMs: 10000,
                 warmup: true,
@@ -975,7 +976,7 @@ const useProctor = ({
         ...(headMovementEnabled
           ? [{
               key: "head",
-              promise: postMlJson("/head/analyze", {
+              promise: postMlMultipart("/head/analyze", {
                 frame,
                 baseline: headPoseBaseline,
                 tracker_id: sessionId || examId || "default",

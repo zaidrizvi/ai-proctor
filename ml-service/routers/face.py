@@ -1,5 +1,4 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request
 import sys
 import os
 import traceback
@@ -7,7 +6,7 @@ from typing import List, Optional
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.frame_utils import base64_to_frame
+from utils.frame_utils import get_frame_from_payload, parse_json_field, parse_request_payload
 
 router = APIRouter()
 _DeepFace = None
@@ -32,16 +31,6 @@ DETECTION_BACKENDS = ("yunet", "opencv")
 VERIFY_DETECTOR_BACKENDS = ("yunet", "opencv")
 COSINE_DISTANCE_THRESHOLD = 0.4
 MAX_COSINE_DISTANCE_THRESHOLD = 0.46
-
-
-class FrameRequest(BaseModel):
-    frame: str  # base64 image
-
-
-class VerifyRequest(BaseModel):
-    frame: str  # current webcam frame
-    reference: Optional[str] = None  # registered face image (base64)
-    reference_embedding: Optional[List[float]] = None
 
 
 def get_deepface():
@@ -334,10 +323,11 @@ def extract_embedding(frame, backends=VERIFY_DETECTOR_BACKENDS):
 
 
 @router.post("/detect")
-async def detect_face(req: FrameRequest):
+async def detect_face(request: Request):
     """Detect if face is present and count faces"""
     try:
-        frame = base64_to_frame(req.frame)
+        payload, _ = await parse_request_payload(request)
+        frame = await get_frame_from_payload(payload, "frame")
         reliable_faces, backend = extract_confident_faces(frame)
         presence_faces, presence_backend = extract_confident_faces(
             frame,
@@ -421,10 +411,11 @@ async def detect_face(req: FrameRequest):
 
 
 @router.post("/reference-embedding")
-async def create_reference_embedding(req: FrameRequest):
+async def create_reference_embedding(request: Request):
     """Create a cached Facenet512 embedding for a reference image"""
     try:
-        frame = base64_to_frame(req.frame)
+        payload, _ = await parse_request_payload(request)
+        frame = await get_frame_from_payload(payload, "frame")
         faces, backend = extract_confident_faces(frame, backends=VERIFY_DETECTOR_BACKENDS)
         face_count = len(faces)
         best_face = _best_face_from_detections(frame, faces, MIN_REFERENCE_FACE_AREA_RATIO)
@@ -467,10 +458,11 @@ async def create_reference_embedding(req: FrameRequest):
 
 
 @router.post("/verify")
-async def verify_face(req: VerifyRequest):
+async def verify_face(request: Request):
     """Verify if current face matches registered face"""
     try:
-        current_frame = base64_to_frame(req.frame)
+        payload, _ = await parse_request_payload(request)
+        current_frame = await get_frame_from_payload(payload, "frame")
         current_faces, current_backend = extract_confident_faces(
             current_frame,
             backends=VERIFY_DETECTOR_BACKENDS,
@@ -636,12 +628,12 @@ async def verify_face(req: VerifyRequest):
 
         current_embedding = build_face_embedding(current_best_face["face"]["face"])
 
-        reference_embedding = req.reference_embedding
+        reference_embedding = parse_json_field(payload.get("reference_embedding"), "reference_embedding")
         if not reference_embedding:
-            if not req.reference:
+            if not payload.get("reference"):
                 raise ValueError("Reference image or reference embedding is required")
 
-            reference_frame = base64_to_frame(req.reference)
+            reference_frame = await get_frame_from_payload(payload, "reference")
             reference_faces, reference_backend = extract_confident_faces(
                 reference_frame,
                 backends=VERIFY_DETECTOR_BACKENDS,

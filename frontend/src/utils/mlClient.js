@@ -52,6 +52,39 @@ const estimatePayloadSizeBytes = (payload) => {
   }
 };
 
+const buildMultipartPayload = (fields = {}) => {
+  const formData = new FormData();
+  let payloadSizeBytes = 0;
+
+  Object.entries(fields).forEach(([key, value]) => {
+    if (value === undefined || value === null) {
+      return;
+    }
+
+    if (value instanceof Blob) {
+      const fileName = value instanceof File && value.name
+        ? value.name
+        : `${key}.jpg`;
+      formData.append(key, value, fileName);
+      payloadSizeBytes += value.size || 0;
+      return;
+    }
+
+    if (Array.isArray(value) || (typeof value === "object" && value !== null)) {
+      const serialized = JSON.stringify(value);
+      formData.append(key, serialized);
+      payloadSizeBytes += serialized.length;
+      return;
+    }
+
+    const stringValue = String(value);
+    formData.append(key, stringValue);
+    payloadSizeBytes += stringValue.length;
+  });
+
+  return { formData, payloadSizeBytes };
+};
+
 const readErrorDetail = (error) => {
   const detail = error?.response?.data?.detail;
   if (typeof detail === "string" && detail.trim()) {
@@ -408,9 +441,11 @@ export const ensureMlServiceReady = async ({
   }
 };
 
-export const postMlJson = async (path, payload, {
+const postMlRequest = async (path, payload, {
+  contentType = "application/json",
   healthTimeoutMs = ML_HEALTH_TIMEOUT_MS,
   label = path,
+  payloadSizeBytes = estimatePayloadSizeBytes(payload),
   retries = 0,
   retryDelayMs = ML_RETRY_DELAY_MS,
   timeoutMs = ML_REQUEST_TIMEOUT_MS,
@@ -434,7 +469,6 @@ export const postMlJson = async (path, payload, {
   }
 
   const url = buildMlUrl(resolution.url, path);
-  const payloadSizeBytes = estimatePayloadSizeBytes(payload);
 
   for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
     const startedAt = Date.now();
@@ -457,7 +491,7 @@ export const postMlJson = async (path, payload, {
       const response = await axios.post(url, payload, {
         headers: {
           Accept: "application/json",
-          "Content-Type": "application/json",
+          ...(contentType ? { "Content-Type": contentType } : {}),
         },
         timeout: timeoutMs,
       });
@@ -539,5 +573,22 @@ export const postMlJson = async (path, payload, {
     path,
     requestId,
     resolution,
+  });
+};
+
+export const postMlJson = async (path, payload, options = {}) => {
+  return postMlRequest(path, payload, {
+    ...options,
+    contentType: "application/json",
+    payloadSizeBytes: estimatePayloadSizeBytes(payload),
+  });
+};
+
+export const postMlMultipart = async (path, fields, options = {}) => {
+  const { formData, payloadSizeBytes } = buildMultipartPayload(fields);
+  return postMlRequest(path, formData, {
+    ...options,
+    contentType: null,
+    payloadSizeBytes,
   });
 };
