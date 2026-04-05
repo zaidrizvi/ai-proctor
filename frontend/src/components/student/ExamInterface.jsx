@@ -346,6 +346,7 @@ const ExamInterface = () => {
 
   // refs
   const fullscreenReadyRef = useRef(false);
+  const lastFullscreenStateRef = useRef(Boolean(document.fullscreenElement));
   const initStartedRef = useRef(false);
   const tabSwitchRef = useRef(0);
   const faceNotDetectedRef = useRef(0);
@@ -472,7 +473,7 @@ const ExamInterface = () => {
 
     const cooldown = EVENT_LOG_COOLDOWNS_MS[eventType] ?? 5000;
     const dedupeKey =
-      eventType === "audio_detected"
+      eventType === "audio_detected" || eventType === "fullscreen_exit"
         ? eventType
         : `${eventType}:${description || ""}`;
     const now = Date.now();
@@ -1433,6 +1434,8 @@ const ExamInterface = () => {
 
   const handleFullscreenChange = useCallback(() => {
     const inFullscreen = !!document.fullscreenElement;
+    const wasInFullscreen = lastFullscreenStateRef.current;
+    lastFullscreenStateRef.current = inFullscreen;
 
     if (examReady && !submitted && !submitting) {
       setFullscreenLocked(!inFullscreen);
@@ -1441,7 +1444,7 @@ const ExamInterface = () => {
     if (!fullscreenReadyRef.current || submitting) return;
     setTimeout(() => {
       const stillInFullscreen = !!document.fullscreenElement;
-      if (!stillInFullscreen) {
+      if (wasInFullscreen && !stillInFullscreen) {
         incrementFullscreenExit();
         logProctorEvent("fullscreen_exit", "high", "Student exited fullscreen");
       }
@@ -1461,6 +1464,7 @@ const ExamInterface = () => {
       return undefined;
     }
 
+    lastFullscreenStateRef.current = !!document.fullscreenElement;
     setFullscreenLocked(!document.fullscreenElement);
 
     return undefined;
