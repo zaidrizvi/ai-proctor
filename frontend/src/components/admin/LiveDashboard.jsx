@@ -19,6 +19,30 @@ import {
 const normalizeOnlineUserIds = (onlineUserIds = []) =>
   new Set((onlineUserIds || []).map((userId) => String(userId)));
 
+const buildStudentMap = (sessions = [], onlineUserIds = []) => {
+  const onlineSet = normalizeOnlineUserIds(onlineUserIds);
+  const map = {};
+
+  sessions.forEach((session) => {
+    const studentId = String(session.student._id);
+    map[studentId] = {
+      name: session.student.name,
+      email: session.student.email,
+      sessionId: session._id,
+      score: session.score,
+      percentage: session.percentage,
+      suspicionScore: session.suspicionScore,
+      flaggedEventsCount: session.flaggedEventsCount,
+      tabSwitchCount: session.tabSwitchCount,
+      status: session.status,
+      alerts: [],
+      online: onlineSet.has(studentId),
+    };
+  });
+
+  return map;
+};
+
 const severityStyles = {
   high: "border-red-500/25 bg-red-500/10 text-red-300",
   medium: "border-amber-500/25 bg-amber-500/10 text-amber-200",
@@ -68,7 +92,6 @@ const LiveDashboard = () => {
   useEffect(() => {
     let cancelled = false;
 
-    setOnlineUserIds([]);
     setRecentAlerts([]);
     setSessions([]);
     setStudents({});
@@ -86,25 +109,7 @@ const LiveDashboard = () => {
         if (cancelled) return;
 
         setSessions(data);
-        const map = {};
-        const onlineSet = normalizeOnlineUserIds(onlineUserIds);
-        data.forEach((session) => {
-          const studentId = String(session.student._id);
-          map[studentId] = {
-            name: session.student.name,
-            email: session.student.email,
-            sessionId: session._id,
-            score: session.score,
-            percentage: session.percentage,
-            suspicionScore: session.suspicionScore,
-            flaggedEventsCount: session.flaggedEventsCount,
-            tabSwitchCount: session.tabSwitchCount,
-            status: session.status,
-            alerts: [],
-            online: onlineSet.has(studentId),
-          };
-        });
-        setStudents(map);
+        setStudents(buildStudentMap(data, onlineUserIds));
       })
       .finally(() => {
         if (!cancelled) {
@@ -115,7 +120,26 @@ const LiveDashboard = () => {
     return () => {
       cancelled = true;
     };
-  }, [onlineUserIds, selectedExam]);
+  }, [selectedExam]);
+
+  useEffect(() => {
+    setStudents((prev) => {
+      const next = buildStudentMap(sessions, onlineUserIds);
+
+      Object.entries(prev).forEach(([userId, student]) => {
+        if (!next[userId]) {
+          return;
+        }
+
+        next[userId] = {
+          ...next[userId],
+          alerts: student.alerts || [],
+        };
+      });
+
+      return next;
+    });
+  }, [onlineUserIds, sessions]);
 
   useEffect(() => {
     if (!selectedExam || !socket) return;
