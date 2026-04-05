@@ -16,6 +16,9 @@ import {
   FiXCircle,
 } from "react-icons/fi";
 
+const normalizeOnlineUserIds = (onlineUserIds = []) =>
+  new Set((onlineUserIds || []).map((userId) => String(userId)));
+
 const severityStyles = {
   high: "border-red-500/25 bg-red-500/10 text-red-300",
   medium: "border-amber-500/25 bg-amber-500/10 text-amber-200",
@@ -51,6 +54,7 @@ const LiveDashboard = () => {
   const [selectedExam, setSelectedExam] = useState(examId || "");
   const [sessions, setSessions] = useState([]);
   const [students, setStudents] = useState({});
+  const [onlineUserIds, setOnlineUserIds] = useState([]);
   const [recentAlerts, setRecentAlerts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [panelMessage, setPanelMessage] = useState({ type: "", text: "" });
@@ -64,6 +68,7 @@ const LiveDashboard = () => {
   useEffect(() => {
     let cancelled = false;
 
+    setOnlineUserIds([]);
     setRecentAlerts([]);
     setSessions([]);
     setStudents({});
@@ -82,8 +87,10 @@ const LiveDashboard = () => {
 
         setSessions(data);
         const map = {};
+        const onlineSet = normalizeOnlineUserIds(onlineUserIds);
         data.forEach((session) => {
-          map[session.student._id] = {
+          const studentId = String(session.student._id);
+          map[studentId] = {
             name: session.student.name,
             email: session.student.email,
             sessionId: session._id,
@@ -94,7 +101,7 @@ const LiveDashboard = () => {
             tabSwitchCount: session.tabSwitchCount,
             status: session.status,
             alerts: [],
-            online: false,
+            online: onlineSet.has(studentId),
           };
         });
         setStudents(map);
@@ -108,7 +115,7 @@ const LiveDashboard = () => {
     return () => {
       cancelled = true;
     };
-  }, [selectedExam]);
+  }, [onlineUserIds, selectedExam]);
 
   useEffect(() => {
     if (!selectedExam || !socket) return;
@@ -125,7 +132,9 @@ const LiveDashboard = () => {
     socket.on("presence-sync", ({ examId: eventExamId, onlineUserIds }) => {
       if (!selectedExam || eventExamId !== selectedExam) return;
 
-      const onlineSet = new Set(onlineUserIds || []);
+      setOnlineUserIds(onlineUserIds || []);
+
+      const onlineSet = normalizeOnlineUserIds(onlineUserIds);
       setStudents((prev) => {
         const next = { ...prev };
         Object.keys(next).forEach((userId) => {

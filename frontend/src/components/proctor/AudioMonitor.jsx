@@ -16,6 +16,23 @@ const CLIENT_RMS_THRESHOLD = 0.014;
 const CLIENT_PEAK_THRESHOLD = 0.07;
 const CLIENT_MIN_ZCR = 0.022;
 const CLIENT_MAX_ZCR = 0.17;
+const AUDIO_WORKLET_PROCESSOR_NAME = "aiproctor-audio-monitor";
+const AUDIO_WORKLET_MODULE_SOURCE = `
+class AIProctorAudioMonitorProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    const channel = input?.[0];
+
+    if (channel?.length) {
+      this.port.postMessage({ samples: Array.from(channel) });
+    }
+
+    return true;
+  }
+}
+
+registerProcessor("${AUDIO_WORKLET_PROCESSOR_NAME}", AIProctorAudioMonitorProcessor);
+`;
 
 const encodeWav = (samples, sampleRate) => {
   const buffer = new ArrayBuffer(44 + (samples.length * 2));
@@ -149,6 +166,7 @@ const AudioMonitor = ({ onAudioDetected, enabled = true, showStatus = true }) =>
   const streamRef = useRef(null);
   const processorRef = useRef(null);
   const sourceRef = useRef(null);
+  const sinkRef = useRef(null);
   const sampleBufferRef = useRef([]);
   const lastSentAtRef = useRef(0);
   const lastAlertAtRef = useRef(0);
@@ -166,13 +184,23 @@ const AudioMonitor = ({ onAudioDetected, enabled = true, showStatus = true }) =>
 
       if (processorRef.current) {
         processorRef.current.disconnect();
-        processorRef.current.onaudioprocess = null;
+        if ("onaudioprocess" in processorRef.current) {
+          processorRef.current.onaudioprocess = null;
+        }
+        if (processorRef.current.port) {
+          processorRef.current.port.onmessage = null;
+        }
         processorRef.current = null;
       }
 
       if (sourceRef.current) {
         sourceRef.current.disconnect();
         sourceRef.current = null;
+      }
+
+      if (sinkRef.current) {
+        sinkRef.current.disconnect();
+        sinkRef.current = null;
       }
 
       if (streamRef.current) {
@@ -333,12 +361,9 @@ const AudioMonitor = ({ onAudioDetected, enabled = true, showStatus = true }) =>
           await audioContext.resume().catch(() => {});
         }
         const source = audioContext.createMediaStreamSource(stream);
-        const processor = audioContext.createScriptProcessor(4096, 1, 1);
-
-        processor.onaudioprocess = (event) => {
+        const pushSamples = (input) => {
           if (cancelled) return;
 
-          const input = event.inputBuffer.getChannelData(0);
           sampleBufferRef.current.push(...input);
           const maxBufferedSamples = Math.max(
             1,
@@ -355,13 +380,47 @@ const AudioMonitor = ({ onAudioDetected, enabled = true, showStatus = true }) =>
           }
         };
 
-        source.connect(processor);
-        processor.connect(audioContext.destination);
+        let processor;
+        let sinkNode = null;
+
+        if (audioContext.audioWorklet && typeof AudioWorkletNode !== "undefined") {
+          const workletBlob = new Blob([AUDIO_WORKLET_MODULE_SOURCE], {
+            type: "application/javascript",
+          });
+          const workletUrl = URL.createObjectURL(workletBlob);
+
+          try {
+            await audioContext.audioWorklet.addModule(workletUrl);
+          } finally {
+            URL.revokeObjectURL(workletUrl);
+          }
+
+          processor = new AudioWorkletNode(audioContext, AUDIO_WORKLET_PROCESSOR_NAME);
+          processor.port.onmessage = (event) => {
+            const samples = event.data?.samples;
+            if (Array.isArray(samples) && samples.length > 0) {
+              pushSamples(samples);
+            }
+          };
+          sinkNode = audioContext.createGain();
+          sinkNode.gain.value = 0;
+          source.connect(processor);
+          processor.connect(sinkNode);
+          sinkNode.connect(audioContext.destination);
+        } else {
+          processor = audioContext.createScriptProcessor(4096, 1, 1);
+          processor.onaudioprocess = (event) => {
+            pushSamples(event.inputBuffer.getChannelData(0));
+          };
+          source.connect(processor);
+          processor.connect(audioContext.destination);
+        }
 
         streamRef.current = stream;
         audioContextRef.current = audioContext;
         sourceRef.current = source;
         processorRef.current = processor;
+        sinkRef.current = sinkNode;
         setStatus("listening");
       } catch (error) {
         if (
