@@ -1,30 +1,40 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
-import { useLocation } from "react-router-dom";
 import { useAuth } from "./AuthContext.jsx";
-import { getRoleFromPath, getTokenForPath } from "../utils/authStorage.js";
+import { getActiveRole, getStoredSession } from "../utils/authStorage.js";
 
 const SocketContext = createContext();
 
 export const SocketProvider = ({ children }) => {
   const { user } = useAuth();
-  const location = useLocation();
   const [socket, setSocket] = useState(null);
   const pendingRoomsRef = useRef(new Map());
-  const pathname = location.pathname;
-  const token = getTokenForPath(pathname);
-  const pathRole = getRoleFromPath(pathname);
-  const socketRole = pathRole || user?.role || null;
+  const userId = user?._id || user?.id || null;
+
+  const authSession = useMemo(() => {
+    const role = user?.role || getActiveRole();
+    if (!role) {
+      return { role: null, token: null };
+    }
+
+    return {
+      role,
+      token: getStoredSession(role)?.token || null,
+    };
+  }, [user?.role]);
+
+  const token = authSession.token;
+  const socketRole = authSession.role;
 
   const emitJoin = useCallback((targetSocket, examId) => {
-    if (!targetSocket || !targetSocket.connected || !user || !examId) {
+    if (!targetSocket || !targetSocket.connected || !userId || !examId) {
       return;
     }
 
     targetSocket.emit("join-exam", {
       examId,
     });
-  }, [user]);
+  }, [userId]);
 
   const emitLeave = useCallback((targetSocket, examId) => {
     if (!targetSocket || !targetSocket.connected || !examId) {
@@ -37,20 +47,24 @@ export const SocketProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
-    if (!user) {
-      if (socket) {
-        socket.disconnect();
-        setSocket(null);
-      }
+    if (!userId) {
+      setSocket((currentSocket) => {
+        if (currentSocket) {
+          currentSocket.disconnect();
+        }
+        return null;
+      });
       pendingRoomsRef.current.clear();
       return;
     }
 
     if (!token) {
-      if (socket) {
-        socket.disconnect();
-      }
-      setSocket(null);
+      setSocket((currentSocket) => {
+        if (currentSocket) {
+          currentSocket.disconnect();
+        }
+        return null;
+      });
       pendingRoomsRef.current.clear();
       return;
     }
@@ -63,7 +77,9 @@ export const SocketProvider = ({ children }) => {
     newSocket.on("connect", () => {
       console.log("Socket connected:", newSocket.id);
       pendingRoomsRef.current.forEach((_, examId) => {
-        emitJoin(newSocket, examId);
+        if (userId && examId) {
+          newSocket.emit("join-exam", { examId });
+        }
       });
     });
 
@@ -80,10 +96,10 @@ export const SocketProvider = ({ children }) => {
     return () => {
       newSocket.disconnect();
     };
-  }, [emitJoin, socketRole, token, user]);
+  }, [socketRole, token, userId]);
 
   const joinExamRoom = useCallback((examId) => {
-    if (!examId || !user) {
+    if (!examId || !userId) {
       return;
     }
 
@@ -92,7 +108,7 @@ export const SocketProvider = ({ children }) => {
     if (socket?.connected) {
       emitJoin(socket, examId);
     }
-  }, [emitJoin, socket, user]);
+  }, [emitJoin, socket, userId]);
 
   const leaveExamRoom = useCallback((examId) => {
     if (!examId) {
