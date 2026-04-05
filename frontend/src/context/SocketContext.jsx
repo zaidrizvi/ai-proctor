@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { io } from "socket.io-client";
 import { useLocation } from "react-router-dom";
 import { useAuth } from "./AuthContext.jsx";
-import { getTokenForPath } from "../utils/authStorage.js";
+import { getRoleFromPath, getTokenForPath } from "../utils/authStorage.js";
 
 const SocketContext = createContext();
 
@@ -12,6 +12,9 @@ export const SocketProvider = ({ children }) => {
   const [socket, setSocket] = useState(null);
   const pendingRoomsRef = useRef(new Map());
   const pathname = location.pathname;
+  const token = getTokenForPath(pathname);
+  const pathRole = getRoleFromPath(pathname);
+  const socketRole = pathRole || user?.role || null;
 
   const emitJoin = useCallback((targetSocket, examId) => {
     if (!targetSocket || !targetSocket.connected || !user || !examId) {
@@ -43,7 +46,6 @@ export const SocketProvider = ({ children }) => {
       return;
     }
 
-    const token = getTokenForPath(pathname);
     if (!token) {
       if (socket) {
         socket.disconnect();
@@ -69,12 +71,16 @@ export const SocketProvider = ({ children }) => {
       console.log("Socket disconnected");
     });
 
+    newSocket.on("connect_error", (error) => {
+      console.warn("Socket connect error:", error?.message || error);
+    });
+
     setSocket(newSocket);
 
     return () => {
       newSocket.disconnect();
     };
-  }, [emitJoin, pathname, user]);
+  }, [emitJoin, socketRole, token, user]);
 
   const joinExamRoom = useCallback((examId) => {
     if (!examId || !user) {

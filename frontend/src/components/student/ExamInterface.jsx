@@ -578,6 +578,28 @@ const ExamInterface = () => {
     }
   }, [examId, studentId]);
 
+  const clearExamPreparationArtifacts = useCallback(() => {
+    clearHeadPoseBaseline();
+    pendingVerificationImageRef.current = "";
+    baselineCalibrationRef.current = null;
+
+    if (baselineRetryTimeoutRef.current) {
+      window.clearTimeout(baselineRetryTimeoutRef.current);
+      baselineRetryTimeoutRef.current = null;
+    }
+  }, [clearHeadPoseBaseline]);
+
+  const clearExamPreparationState = useCallback(() => {
+    clearExamPreparationArtifacts();
+    setHeadPoseBaseline(null);
+    setBaselineCalibrationInfo({
+      status: "idle",
+      missing: [],
+      debug: null,
+    });
+    setStartReady(false);
+  }, [clearExamPreparationArtifacts]);
+
   const proctorSettings = resolveExamProctorSettings(exam?.proctorSettings);
   const faceDetectionEnabled = proctorSettings.faceDetection;
   const faceVerificationEnabled = proctorSettings.faceVerification;
@@ -647,6 +669,21 @@ const ExamInterface = () => {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    const cleanupIfExamNeverStarted = () => {
+      const activeSession = sessionRef.current;
+      if (!activeSession?.startedAt) {
+        clearExamPreparationArtifacts();
+      }
+    };
+
+    window.addEventListener("pagehide", cleanupIfExamNeverStarted);
+    return () => {
+      window.removeEventListener("pagehide", cleanupIfExamNeverStarted);
+      cleanupIfExamNeverStarted();
+    };
+  }, [clearExamPreparationArtifacts]);
 
   useEffect(() => {
     answersRef.current = answers;
@@ -917,7 +954,7 @@ const ExamInterface = () => {
     }
 
     if (activeSession.status === "completed" && loadedExam) {
-      clearHeadPoseBaseline();
+      clearExamPreparationState();
       setResult({
         score: activeSession.score || 0,
         percentage: activeSession.percentage || 0,
@@ -930,10 +967,10 @@ const ExamInterface = () => {
     }
 
     if (activeSession.status === "terminated" || activeSession.status === "abandoned") {
-      clearHeadPoseBaseline();
+      clearExamPreparationState();
       setError(`This exam session is already ${activeSession.status}.`);
     }
-  }, [clearHeadPoseBaseline, exam, examId, getHydratedProgress, joinExamRoom]);
+  }, [clearExamPreparationState, exam, examId, getHydratedProgress, joinExamRoom]);
 
   const ensureExamSession = useCallback(async () => {
     if (sessionRef.current?._id) {
@@ -1610,6 +1647,7 @@ const ExamInterface = () => {
     setSubmitting(true);
     setSubmissionError("");
     fullscreenReadyRef.current = false;
+    clearExamPreparationArtifacts();
     if (document.fullscreenElement) {
       try {
         await document.exitFullscreen();
@@ -1627,7 +1665,7 @@ const ExamInterface = () => {
         tabSwitchCount: tabSwitchRef.current,
         faceNotDetectedCount: faceNotDetectedRef.current,
       });
-      clearHeadPoseBaseline();
+      clearExamPreparationState();
       setResult(data);
       setSubmitted(true);
     } catch (err) {
