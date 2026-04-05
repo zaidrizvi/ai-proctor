@@ -275,10 +275,10 @@ const LiveDashboard = () => {
   const selectedExamMeta = exams.find((exam) => exam._id === selectedExam);
 
   const statCards = [
-    { label: "Tracked Sessions", value: studentList.length, icon: FiUsers, tone: "info" },
-    { label: "Online Now", value: onlineCount, icon: FiActivity, tone: "success" },
-    { label: "High Suspicion", value: highAlertCount, icon: FiAlertTriangle, tone: "danger" },
-    { label: "Live Alerts", value: recentAlerts.length, icon: FiShield, tone: "warning" },
+    { label: "Tracked Sessions", value: studentList.length, meta: `${sessions.length} loaded`, icon: FiUsers, tone: "info" },
+    { label: "Online Now", value: onlineCount, meta: "students online", icon: FiActivity, tone: "success" },
+    { label: "High Suspicion", value: highAlertCount, meta: "flagged now", icon: FiAlertTriangle, tone: "danger" },
+    { label: "Live Alerts", value: recentAlerts.length, meta: "recent feed", icon: FiShield, tone: "warning" },
   ];
 
   return (
@@ -351,7 +351,7 @@ const LiveDashboard = () => {
         ) : (
           <>
             <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
-              {statCards.map(({ label, value, icon: Icon, tone }) => (
+              {statCards.map(({ label, value, meta, icon: Icon, tone }) => (
                 <div key={label} className="theme-stat-card rounded-[22px] px-4 py-3.5">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -359,9 +359,7 @@ const LiveDashboard = () => {
                       <div className="mt-1 flex items-end gap-2">
                         <p className="text-[1.85rem] font-semibold leading-none tracking-tight text-[var(--app-text)]">{value}</p>
                         <p className="pb-0.5 text-[11px] text-[var(--app-subtle)]">
-                          {label === "Tracked Sessions"
-                            ? `${sessions.length} loaded`
-                            : "Live"}
+                          {meta}
                         </p>
                       </div>
                     </div>
