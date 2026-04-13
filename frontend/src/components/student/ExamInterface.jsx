@@ -51,27 +51,27 @@ const EVENT_LOG_COOLDOWNS_MS = {
 const SHOW_STUDENT_DEBUG_UI = false;
 const SHOW_STUDENT_ML_PREVIEW = true;
 const LIVE_ALERT_LIMIT = 4;
-const BASELINE_MIN_POSE_QUALITY = 0.50;
+const BASELINE_MIN_POSE_QUALITY = 0.46;
 const BASELINE_RETRY_DELAY_MS = 2000;
-const BASELINE_CAPTURE_ATTEMPTS = 18;
-const BASELINE_CAPTURE_PAUSE_MS = 220;
-const BASELINE_TARGET_HEAD_SAMPLES = 6;
-const BASELINE_MIN_HEAD_SAMPLES = 5;
-const BASELINE_MAX_MOVEMENT_SCORE = 0.95;
-const BASELINE_MAX_COMBINED_MOVEMENT_SCORE = 1.02;
+const BASELINE_CAPTURE_ATTEMPTS = 20;
+const BASELINE_CAPTURE_PAUSE_MS = 320;
+const BASELINE_TARGET_HEAD_SAMPLES = 5;
+const BASELINE_MIN_HEAD_SAMPLES = 4;
+const BASELINE_MAX_MOVEMENT_SCORE = 1.05;
+const BASELINE_MAX_COMBINED_MOVEMENT_SCORE = 1.12;
 const BASELINE_MAX_HEAD_DELTA = {
-  pitch: 8,
-  yaw: 7.5,
-  roll: 7,
-  nose_offset_x: 0.055,
-  nose_offset_y: 0.05,
+  pitch: 9.5,
+  yaw: 9,
+  roll: 8.5,
+  nose_offset_x: 0.065,
+  nose_offset_y: 0.06,
 };
 const BASELINE_MAX_HEAD_SPREAD = {
-  pitch: 6.5,
-  yaw: 5.5,
-  roll: 6,
-  nose_offset_x: 0.042,
-  nose_offset_y: 0.04,
+  pitch: 8,
+  yaw: 7,
+  roll: 7.5,
+  nose_offset_x: 0.05,
+  nose_offset_y: 0.048,
 };
 const BASELINE_SAMPLE_KEYS = [
   "pitch",
@@ -1005,7 +1005,7 @@ const ExamInterface = () => {
       try {
         const { data: headData } = await postMlMultipart("/head/analyze", {
           frame,
-          tracker_id: session?._id || examId || "default",
+          tracker_id: session?._id || examId || "baseline-calibration",
         }, {
           label: "exam.head.baseline",
           retries: 1,
