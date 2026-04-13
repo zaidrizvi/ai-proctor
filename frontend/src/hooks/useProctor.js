@@ -46,6 +46,14 @@ const DESKTOP_JPEG_QUALITY = 0.78;
 const MOBILE_JPEG_QUALITY = 0.78;
 const PRIORITY_SUSPICIOUS_OBJECTS = new Set(["cell phone", "book", "remote"]);
 
+const createPerTabTrackerId = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
 const isLikelyMobileBrowser = () => {
   if (typeof navigator === "undefined") {
     return false;
@@ -76,6 +84,7 @@ const useProctor = ({
   verifyIntervalMs = 30000,
 }) => {
   const intervalRef = useRef(null);
+  const fallbackTrackerIdRef = useRef("");
   const criticalAnalysisInFlightRef = useRef(false);
   const objectAnalysisInFlightRef = useRef(false);
   const verifyAnalysisInFlightRef = useRef(false);
@@ -147,6 +156,12 @@ const useProctor = ({
     camera_frame_unavailable: 0,
     total_checks: 0,
   });
+
+  if (!fallbackTrackerIdRef.current) {
+    fallbackTrackerIdRef.current = createPerTabTrackerId();
+  }
+
+  const activeTrackerId = sessionId || `${examId || "exam"}-${fallbackTrackerIdRef.current}`;
 
   const isTokenActive = useCallback((token) => {
     return token === lifecycleTokenRef.current && Boolean(enabled) && Boolean(sessionId);
@@ -817,9 +832,12 @@ const useProctor = ({
       objectAnalysisInFlightRef.current = true;
       lastObjectCheckAtRef.current = now;
 
-      void postMlMultipart("/objects/detect", { frame }, {
+      void postMlMultipart("/objects/detect", {
+        frame,
+        tracker_id: activeTrackerId,
+      }, {
         label: "proctor.objects.detect",
-        timeoutMs: 10000,
+        timeoutMs: 3000,
         warmup: true,
       })
         .then((response) => {
@@ -979,7 +997,7 @@ const useProctor = ({
               promise: postMlMultipart("/head/analyze", {
                 frame,
                 baseline: headPoseBaseline,
-                tracker_id: sessionId || examId || "default",
+                tracker_id: activeTrackerId,
               }, {
                 label: "proctor.head.analyze",
                 timeoutMs: 10000,
@@ -1066,6 +1084,7 @@ const useProctor = ({
     faceDetectionEnabled,
     headMovementEnabled,
     headPoseBaseline,
+    activeTrackerId,
     isTokenActive,
     onMlFrame,
     processFaceResult,
