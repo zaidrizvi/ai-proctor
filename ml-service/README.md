@@ -33,6 +33,7 @@ This repository is prepared for deployment as a Hugging Face Docker Space.
 4. In the Space settings, add these variables if needed:
    - `CLIENT_URL=https://aiproctor-frontend.onrender.com`
    - `ALLOWED_ORIGINS=https://aiproctor-frontend.onrender.com`
+   - `YOLO_OBJECT_MODEL=yolo26n.pt`
 5. Wait for the Docker build to finish.
 6. Open `/health` on the Space URL and confirm:
    - `routersRegistered: true`
@@ -50,3 +51,5 @@ This repository is prepared for deployment as a Hugging Face Docker Space.
 pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+Object detection defaults to `yolo26n.pt`. The service looks for a local weights file in the `ml-service` directory first, and otherwise falls back to the Ultralytics model name from `YOLO_OBJECT_MODEL`.

@@ -25,13 +25,13 @@ def get_yolo_class():
 def get_model():
     global model
     if model is None:
-        model_path = os.path.join(
+        model_name = os.getenv("YOLO_OBJECT_MODEL", "yolo26n.pt")
+        local_model_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "yolov8n.pt",
+            model_name,
         )
-        if not os.path.exists(model_path):
-            raise RuntimeError(f"YOLO model not found at '{model_path}'")
-        model = get_yolo_class()(model_path)
+        model_source = local_model_path if os.path.exists(local_model_path) else model_name
+        model = get_yolo_class()(model_source)
     return model
 
 MODEL_RETURN_CONFIDENCE = 0.08
