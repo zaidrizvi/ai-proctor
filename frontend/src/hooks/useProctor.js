@@ -837,7 +837,7 @@ const useProctor = ({
         tracker_id: activeTrackerId,
       }, {
         label: "proctor.objects.detect",
-        timeoutMs: 3000,
+        timeoutMs: 6000,
         warmup: true,
       })
         .then((response) => {
