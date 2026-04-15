@@ -4,8 +4,7 @@ import Exam from "../models/Exam.js";
 import { examOwnedBy, isProctorEventEnabled } from "../utils/examPolicy.js";
 import { syncSessionProctorSummary } from "../utils/proctorSummary.js";
 
-const filterVisibleEvents = (events = []) =>
-  events.filter((event) => event?.eventType !== "gaze_away");
+const filterVisibleEvents = (events = []) => events;
 
 // @desc    Log a proctor event (called from frontend during exam)
 // @route   POST /api/proctor/event

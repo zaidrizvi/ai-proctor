@@ -1,6 +1,7 @@
 const DEFAULT_PROCTOR_SETTINGS = {
   faceDetection: true,
   faceVerification: true,
+  gazeTracking: false,
   objectDetection: true,
   audioDetection: true,
   headMovement: true,
@@ -42,6 +43,10 @@ export const normalizeExamProctorSettings = (rawSettings = {}) => {
       source.faceDetection,
       DEFAULT_PROCTOR_SETTINGS.faceVerification
     ),
+    gazeTracking: firstBoolean(
+      source.gazeTracking,
+      DEFAULT_PROCTOR_SETTINGS.gazeTracking
+    ),
     objectDetection: firstBoolean(
       source.objectDetection,
       DEFAULT_PROCTOR_SETTINGS.objectDetection
@@ -72,4 +77,3 @@ export const withNormalizedProctorSettings = (exam) => {
   plainExam.proctorSettings = normalizeExamProctorSettings(plainExam.proctorSettings);
   return plainExam;
 };
-

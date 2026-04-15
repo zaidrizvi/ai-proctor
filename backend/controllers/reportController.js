@@ -9,8 +9,7 @@ import {
 } from "../utils/proctorSummary.js";
 import { withNormalizedProctorSettings } from "../utils/proctorSettings.js";
 
-const filterReportEvents = (events = []) =>
-  events.filter((event) => event?.eventType !== "gaze_away");
+const filterReportEvents = (events = []) => events;
 
 const buildStudentSafeSession = (session) => {
   const nextSession = typeof session.toObject === "function" ? session.toObject() : { ...session };

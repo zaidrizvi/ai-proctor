@@ -85,11 +85,11 @@ const examSchema = new mongoose.Schema(
     proctorSettings: {
       faceDetection: { type: Boolean, default: true },
       faceVerification: { type: Boolean, default: true },
+      gazeTracking: { type: Boolean, default: true },
       objectDetection: { type: Boolean, default: true },
       audioDetection: { type: Boolean, default: true },
       headMovement: { type: Boolean, default: true },
       // Legacy aliases kept only so older documents can still be read safely.
-      gazeTracking: { type: Boolean, default: undefined },
       audioMonitoring: { type: Boolean, default: undefined },
       headPoseDetection: { type: Boolean, default: undefined },
       suspicionThreshold: { type: Number, default: 70 }, // 0-100

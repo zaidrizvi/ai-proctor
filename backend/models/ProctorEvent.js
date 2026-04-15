@@ -23,6 +23,7 @@ const proctorEventSchema = new mongoose.Schema(
         "face_not_detected",
         "multiple_faces",
         "head_turned",
+        "gaze_away",
         "audio_detected",
         "object_detected",
         "tab_switch",

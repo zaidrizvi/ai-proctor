@@ -38,6 +38,7 @@ const EXAM_AUDIO_CONSTRAINTS = {
 const TAB_SWITCH_COOLDOWN_MS = 1500;
 const EVENT_LOG_COOLDOWNS_MS = {
   audio_detected: 1200,
+  gaze_away: 2000,
   head_turned: 2000,
   face_not_detected: 2000,
   camera_frame_unavailable: 8000,
@@ -57,8 +58,14 @@ const BASELINE_CAPTURE_ATTEMPTS = 20;
 const BASELINE_CAPTURE_PAUSE_MS = 320;
 const BASELINE_TARGET_HEAD_SAMPLES = 5;
 const BASELINE_MIN_HEAD_SAMPLES = 4;
+const BASELINE_TARGET_GAZE_SAMPLES = 5;
+const BASELINE_MIN_GAZE_SAMPLES = 4;
 const BASELINE_MAX_MOVEMENT_SCORE = 1.05;
 const BASELINE_MAX_COMBINED_MOVEMENT_SCORE = 1.12;
+const BASELINE_MAX_GAZE_SCORE = 0.9;
+const BASELINE_MAX_COMBINED_GAZE_SCORE = 0.96;
+const BASELINE_MIN_GAZE_FACE_CONFIDENCE = 0.5;
+const BASELINE_MIN_GAZE_FACE_AREA_RATIO = 0.024;
 const BASELINE_MAX_HEAD_DELTA = {
   pitch: 9.5,
   yaw: 9,
@@ -73,17 +80,27 @@ const BASELINE_MAX_HEAD_SPREAD = {
   nose_offset_x: 0.05,
   nose_offset_y: 0.048,
 };
-const BASELINE_SAMPLE_KEYS = [
+const HEAD_BASELINE_SAMPLE_KEYS = [
   "pitch",
   "yaw",
   "roll",
   "nose_offset_x",
   "nose_offset_y",
 ];
+const GAZE_BASELINE_SAMPLE_KEYS = ["pitch", "yaw"];
+const BASELINE_MAX_GAZE_DELTA = {
+  pitch: 8.5,
+  yaw: 9,
+};
+const BASELINE_MAX_GAZE_SPREAD = {
+  pitch: 7.5,
+  yaw: 8,
+};
 const EVENT_LABELS = {
   face_not_detected: "Face Missing",
   camera_frame_unavailable: "Camera Frame Unavailable",
   multiple_faces: "Multiple Faces",
+  gaze_away: "Gaze Away",
   head_turned: "Head Turned",
   audio_detected: "Audio Detected",
   object_detected: "Object Detected",
@@ -177,11 +194,15 @@ const isSpreadConsistent = (spread, maxSpread) => {
   });
 };
 
-const getMissingBaselineParts = (baseline) => {
+const getMissingBaselineParts = (baseline, requirements = {}) => {
   const missing = [];
 
-  if (!baseline?.head) {
+  if (requirements.headRequired && !baseline?.head) {
     missing.push("head");
+  }
+
+  if (requirements.gazeRequired && !baseline?.gaze) {
+    missing.push("gaze");
   }
 
   return missing;
@@ -192,7 +213,15 @@ const isValidHeadPoseBaseline = (baseline) => {
     return false;
   }
 
-  return BASELINE_SAMPLE_KEYS.every((key) => Number.isFinite(Number(baseline[key])));
+  return HEAD_BASELINE_SAMPLE_KEYS.every((key) => Number.isFinite(Number(baseline[key])));
+};
+
+const isValidGazeBaseline = (baseline) => {
+  if (!baseline || typeof baseline !== "object") {
+    return false;
+  }
+
+  return GAZE_BASELINE_SAMPLE_KEYS.every((key) => Number.isFinite(Number(baseline[key])));
 };
 
 const getHeadPoseBaselineStorageKey = (examId, studentId) => {
@@ -201,6 +230,18 @@ const getHeadPoseBaselineStorageKey = (examId, studentId) => {
   }
 
   return `exam-head-pose-baseline:${studentId}:${examId}`;
+};
+
+const getBaselineSetupLabel = (headMovementEnabled, gazeTrackingEnabled) => {
+  if (headMovementEnabled && gazeTrackingEnabled) {
+    return "attention baseline";
+  }
+
+  if (gazeTrackingEnabled) {
+    return "gaze baseline";
+  }
+
+  return "head pose baseline";
 };
 
 // ── Webcam Monitor ────────────────────────────────────────────
@@ -381,6 +422,7 @@ const ExamInterface = () => {
   const [referenceFaceEmbedding, setReferenceFaceEmbedding] = useState([]);
   const [studentId, setStudentId] = useState("");
   const [headPoseBaseline, setHeadPoseBaseline] = useState(null);
+  const [gazeBaseline, setGazeBaseline] = useState(null);
   const [baselineCalibrationInfo, setBaselineCalibrationInfo] = useState({
     status: "idle",
     missing: [],
@@ -519,15 +561,19 @@ const ExamInterface = () => {
     setMlFramePreview(previewUrl);
   }, []);
 
-  const persistHeadPoseBaseline = useCallback((baseline, debug = null) => {
+  const persistAttentionBaseline = useCallback((headBaseline, nextGazeBaseline, debug = null) => {
     const storageKey = getHeadPoseBaselineStorageKey(examId, studentId);
-    if (!storageKey || !isValidHeadPoseBaseline(baseline)) {
+    if (
+      !storageKey ||
+      (!isValidHeadPoseBaseline(headBaseline) && !isValidGazeBaseline(nextGazeBaseline))
+    ) {
       return;
     }
 
     try {
       window.localStorage.setItem(storageKey, JSON.stringify({
-        head: baseline,
+        head: isValidHeadPoseBaseline(headBaseline) ? headBaseline : null,
+        gaze: isValidGazeBaseline(nextGazeBaseline) ? nextGazeBaseline : null,
         debug,
         savedAt: Date.now(),
       }));
@@ -536,7 +582,7 @@ const ExamInterface = () => {
     }
   }, [examId, studentId]);
 
-  const restoreHeadPoseBaseline = useCallback(() => {
+  const restoreAttentionBaseline = useCallback(() => {
     const storageKey = getHeadPoseBaselineStorageKey(examId, studentId);
     if (!storageKey) {
       return false;
@@ -549,12 +595,17 @@ const ExamInterface = () => {
       }
 
       const parsedValue = JSON.parse(rawValue);
-      const restoredBaseline = parsedValue?.head || null;
-      if (!isValidHeadPoseBaseline(restoredBaseline)) {
+      const restoredHeadBaseline = parsedValue?.head || null;
+      const restoredGazeBaseline = parsedValue?.gaze || null;
+      if (
+        !isValidHeadPoseBaseline(restoredHeadBaseline) &&
+        !isValidGazeBaseline(restoredGazeBaseline)
+      ) {
         return false;
       }
 
-      setHeadPoseBaseline(restoredBaseline);
+      setHeadPoseBaseline(isValidHeadPoseBaseline(restoredHeadBaseline) ? restoredHeadBaseline : null);
+      setGazeBaseline(isValidGazeBaseline(restoredGazeBaseline) ? restoredGazeBaseline : null);
       setBaselineCalibrationInfo({
         status: "ready",
         missing: [],
@@ -566,7 +617,7 @@ const ExamInterface = () => {
     }
   }, [examId, studentId]);
 
-  const clearHeadPoseBaseline = useCallback(() => {
+  const clearAttentionBaseline = useCallback(() => {
     const storageKey = getHeadPoseBaselineStorageKey(examId, studentId);
     if (!storageKey) {
       return;
@@ -580,7 +631,7 @@ const ExamInterface = () => {
   }, [examId, studentId]);
 
   const clearExamPreparationArtifacts = useCallback(() => {
-    clearHeadPoseBaseline();
+    clearAttentionBaseline();
     pendingVerificationImageRef.current = "";
     baselineCalibrationRef.current = null;
 
@@ -588,11 +639,12 @@ const ExamInterface = () => {
       window.clearTimeout(baselineRetryTimeoutRef.current);
       baselineRetryTimeoutRef.current = null;
     }
-  }, [clearHeadPoseBaseline]);
+  }, [clearAttentionBaseline]);
 
   const clearExamPreparationState = useCallback(() => {
     clearExamPreparationArtifacts();
     setHeadPoseBaseline(null);
+    setGazeBaseline(null);
     setBaselineCalibrationInfo({
       status: "idle",
       missing: [],
@@ -604,10 +656,13 @@ const ExamInterface = () => {
   const proctorSettings = resolveExamProctorSettings(exam?.proctorSettings);
   const faceDetectionEnabled = proctorSettings.faceDetection;
   const faceVerificationEnabled = proctorSettings.faceVerification;
+  const gazeTrackingEnabled = proctorSettings.gazeTracking;
   const headMovementEnabled = proctorSettings.headMovement;
   const objectDetectionEnabled = proctorSettings.objectDetection;
   const audioDetectionEnabled = proctorSettings.audioDetection;
+  const attentionBaselineEnabled = headMovementEnabled || gazeTrackingEnabled;
   const visualMonitoringEnabled = isVisualProctoringEnabled(proctorSettings);
+  const baselineSetupLabel = getBaselineSetupLabel(headMovementEnabled, gazeTrackingEnabled);
 
   // ── useProctor hook ─────────────────────────────────────────
   const {
@@ -625,9 +680,12 @@ const ExamInterface = () => {
     referenceFace,
     referenceFaceEmbedding,
     headPoseBaseline,
+    gazeBaseline,
     suppressHeadTurnAlerts: baselineCalibrationInfo.status !== "ready",
+    suppressGazeAlerts: baselineCalibrationInfo.status !== "ready",
     faceDetectionEnabled,
     faceVerificationEnabled,
+    gazeTrackingEnabled,
     headMovementEnabled,
     objectDetectionEnabled,
     onAlert: handleWebcamAlert,
@@ -637,27 +695,48 @@ const ExamInterface = () => {
   });
 
   useEffect(() => {
-    if (!headMovementEnabled || headPoseBaseline || !studentId) {
-      return;
-    }
+    const hasRequiredStoredBaseline = (
+      (headMovementEnabled ? isValidHeadPoseBaseline(headPoseBaseline) : true) &&
+      (gazeTrackingEnabled ? isValidGazeBaseline(gazeBaseline) : true)
+    );
 
-    void restoreHeadPoseBaseline();
-  }, [headMovementEnabled, headPoseBaseline, restoreHeadPoseBaseline, studentId]);
-
-  useEffect(() => {
     if (
-      baselineCalibrationInfo.status !== "ready" ||
-      !isValidHeadPoseBaseline(headPoseBaseline)
+      !attentionBaselineEnabled ||
+      hasRequiredStoredBaseline ||
+      !studentId
     ) {
       return;
     }
 
-    persistHeadPoseBaseline(headPoseBaseline, baselineCalibrationInfo.debug || null);
+    void restoreAttentionBaseline();
+  }, [
+    attentionBaselineEnabled,
+    gazeBaseline,
+    gazeTrackingEnabled,
+    headMovementEnabled,
+    headPoseBaseline,
+    restoreAttentionBaseline,
+    studentId,
+  ]);
+
+  useEffect(() => {
+    if (
+      baselineCalibrationInfo.status !== "ready" ||
+      (headMovementEnabled && !isValidHeadPoseBaseline(headPoseBaseline)) ||
+      (gazeTrackingEnabled && !isValidGazeBaseline(gazeBaseline))
+    ) {
+      return;
+    }
+
+    persistAttentionBaseline(headPoseBaseline, gazeBaseline, baselineCalibrationInfo.debug || null);
   }, [
     baselineCalibrationInfo.debug,
     baselineCalibrationInfo.status,
+    gazeBaseline,
+    gazeTrackingEnabled,
+    headMovementEnabled,
     headPoseBaseline,
-    persistHeadPoseBaseline,
+    persistAttentionBaseline,
   ]);
 
   // ── init exam ───────────────────────────────────────────────
@@ -718,7 +797,10 @@ const ExamInterface = () => {
       settingsOverride || exam?.proctorSettings
     );
     const effectiveFaceVerificationEnabled = effectiveSettings.faceVerification;
+    const effectiveGazeTrackingEnabled = effectiveSettings.gazeTracking;
     const effectiveHeadMovementEnabled = effectiveSettings.headMovement;
+    const effectiveAttentionBaselineEnabled =
+      effectiveHeadMovementEnabled || effectiveGazeTrackingEnabled;
 
     try {
       const { data } = await api.get("/auth/me");
@@ -727,16 +809,16 @@ const ExamInterface = () => {
       const savedReferenceEmbedding = Array.isArray(data.faceEmbedding) ? data.faceEmbedding : [];
       setReferenceFace(savedReference);
       setReferenceFaceEmbedding(savedReferenceEmbedding);
-      if (!effectiveFaceVerificationEnabled && !effectiveHeadMovementEnabled) {
+      if (!effectiveFaceVerificationEnabled && !effectiveAttentionBaselineEnabled) {
         setIdentityStatus("ready");
-        setIdentityMessage("This exam can start without face verification or head baseline setup.");
+        setIdentityMessage("This exam can start without face verification or baseline setup.");
       } else if (!effectiveFaceVerificationEnabled) {
         setIdentityStatus("ready");
-        setIdentityMessage("Face verification is disabled for this exam. Only head baseline setup is required before starting.");
+        setIdentityMessage("Face verification is disabled for this exam. Only baseline setup is required before starting.");
       } else if (savedReference) {
-        setIdentityStatus(effectiveHeadMovementEnabled ? "ready" : "verified");
+        setIdentityStatus(effectiveAttentionBaselineEnabled ? "ready" : "verified");
         setIdentityMessage(
-          effectiveHeadMovementEnabled
+          effectiveAttentionBaselineEnabled
             ? "Reference face is available for verification."
             : "Reference face is available and face verification is the only required check."
         );
@@ -746,7 +828,7 @@ const ExamInterface = () => {
       }
     } catch {
       setStudentId("");
-      if (!effectiveFaceVerificationEnabled && !effectiveHeadMovementEnabled) {
+      if (!effectiveFaceVerificationEnabled && !effectiveAttentionBaselineEnabled) {
         setIdentityStatus("ready");
         setIdentityMessage("Exam setup can continue without loading a stored face reference.");
       } else {
@@ -985,13 +1067,16 @@ const ExamInterface = () => {
   }, [activateSession, examId]);
 
   const calibrateAttentionBaseline = useCallback(async () => {
-    if (!headMovementEnabled) {
-      return { head: null, debug: null };
+    if (!attentionBaselineEnabled) {
+      return { head: null, gaze: null, debug: null };
     }
 
     const headSamples = [];
+    const gazeSamples = [];
     let lastAcceptedHeadSample = null;
+    let lastAcceptedGazeSample = null;
     let poseQualityTotal = 0;
+    let gazeConfidenceTotal = 0;
     let attemptsUsed = 0;
 
     for (let attempt = 0; attempt < BASELINE_CAPTURE_ATTEMPTS; attempt += 1) {
@@ -1003,90 +1088,171 @@ const ExamInterface = () => {
       }
 
       try {
-        const { data: headData } = await postMlMultipart("/head/analyze", {
-          frame,
-          tracker_id: session?._id || examId || "baseline-calibration",
-        }, {
-          label: "exam.head.baseline",
-          retries: 1,
-          timeoutMs: 16000,
-          warmup: true,
-        });
+        const requests = await Promise.allSettled([
+          ...(headMovementEnabled ? [
+            postMlMultipart("/head/analyze", {
+              frame,
+              tracker_id: session?._id || examId || "baseline-calibration",
+            }, {
+              label: "exam.head.baseline",
+              retries: 1,
+              timeoutMs: 16000,
+              warmup: true,
+            }),
+          ] : []),
+          ...(gazeTrackingEnabled ? [
+            postMlMultipart("/gaze/analyze", {
+              frame,
+              tracker_id: session?._id || examId || "baseline-calibration",
+            }, {
+              label: "exam.gaze.baseline",
+              retries: 1,
+              timeoutMs: 16000,
+              warmup: true,
+            }),
+          ] : []),
+        ]);
 
-        if (
-          headData.head_detected &&
-          Number(headData.pose_quality || 0) >= BASELINE_MIN_POSE_QUALITY &&
-          !headData.obvious_turn &&
-          !headData.clear_yaw_turn &&
-          Number(headData.movement_score || 0) <= BASELINE_MAX_MOVEMENT_SCORE &&
-          Number(headData.combined_movement_score || 0) <= BASELINE_MAX_COMBINED_MOVEMENT_SCORE &&
-          !(
-            headData.downward_signal &&
-            (headData.turn_axis || "none") === "downward" &&
-            Number(headData.combined_movement_score || 0) >= 0.9
-          )
-        ) {
-          const headSample = {
-            pitch: headData.pitch,
-            yaw: headData.yaw,
-            roll: headData.roll,
-            nose_offset_x: headData.nose_offset_x,
-            nose_offset_y: headData.nose_offset_y,
-          };
+        const headResult = headMovementEnabled ? requests.shift() : null;
+        const gazeResult = gazeTrackingEnabled ? requests.shift() : null;
 
-          if (isStableAgainstPrevious(lastAcceptedHeadSample, headSample, BASELINE_MAX_HEAD_DELTA)) {
-            headSamples.push(headSample);
-            lastAcceptedHeadSample = headSample;
-            poseQualityTotal += Number(headData.pose_quality || 0);
+        if (headMovementEnabled && headResult?.status === "fulfilled") {
+          const headData = headResult.value.data;
+          if (
+            headData.head_detected &&
+            Number(headData.pose_quality || 0) >= BASELINE_MIN_POSE_QUALITY &&
+            !headData.obvious_turn &&
+            !headData.clear_yaw_turn &&
+            Number(headData.movement_score || 0) <= BASELINE_MAX_MOVEMENT_SCORE &&
+            Number(headData.combined_movement_score || 0) <= BASELINE_MAX_COMBINED_MOVEMENT_SCORE &&
+            !(
+              headData.downward_signal &&
+              (headData.turn_axis || "none") === "downward" &&
+              Number(headData.combined_movement_score || 0) >= 0.9
+            )
+          ) {
+            const headSample = {
+              pitch: headData.pitch,
+              yaw: headData.yaw,
+              roll: headData.roll,
+              nose_offset_x: headData.nose_offset_x,
+              nose_offset_y: headData.nose_offset_y,
+            };
 
-            if (headSamples.length >= BASELINE_MIN_HEAD_SAMPLES) {
-              const spread = measureSampleSpread(headSamples, BASELINE_SAMPLE_KEYS);
-              if (
-                isSpreadConsistent(spread, BASELINE_MAX_HEAD_SPREAD) &&
-                headSamples.length >= BASELINE_TARGET_HEAD_SAMPLES
-              ) {
-                break;
-              }
+            if (isStableAgainstPrevious(lastAcceptedHeadSample, headSample, BASELINE_MAX_HEAD_DELTA)) {
+              headSamples.push(headSample);
+              lastAcceptedHeadSample = headSample;
+              poseQualityTotal += Number(headData.pose_quality || 0);
             }
           }
+        } else if (headResult?.status === "rejected") {
+          console.warn("Baseline head-pose sample failed:", headResult.reason?.mlMeta || headResult.reason);
+        }
+
+        if (gazeTrackingEnabled && gazeResult?.status === "fulfilled") {
+          const gazeData = gazeResult.value.data;
+          if (
+            gazeData.face_detected &&
+            gazeData.event !== "gaze_away" &&
+            Number(gazeData.face_confidence || 0) >= BASELINE_MIN_GAZE_FACE_CONFIDENCE &&
+            Number(gazeData.face_area_ratio || 0) >= BASELINE_MIN_GAZE_FACE_AREA_RATIO &&
+            Number(gazeData.gaze_score || 0) <= BASELINE_MAX_GAZE_SCORE &&
+            Number(gazeData.combined_gaze_score || 0) <= BASELINE_MAX_COMBINED_GAZE_SCORE
+          ) {
+            const gazeSample = {
+              pitch: gazeData.pitch,
+              yaw: gazeData.yaw,
+            };
+
+            if (isStableAgainstPrevious(lastAcceptedGazeSample, gazeSample, BASELINE_MAX_GAZE_DELTA)) {
+              gazeSamples.push(gazeSample);
+              lastAcceptedGazeSample = gazeSample;
+              gazeConfidenceTotal += Number(gazeData.face_confidence || 0);
+            }
+          }
+        } else if (gazeResult?.status === "rejected") {
+          console.warn("Baseline gaze sample failed:", gazeResult.reason?.mlMeta || gazeResult.reason);
         }
       } catch (error) {
-        console.warn("Baseline head-pose sample failed:", error?.mlMeta || error);
+        console.warn("Baseline calibration sample failed:", error?.mlMeta || error);
+      }
+
+      const headSpread = measureSampleSpread(headSamples, HEAD_BASELINE_SAMPLE_KEYS);
+      const headReady = !headMovementEnabled || (
+        headSamples.length >= BASELINE_MIN_HEAD_SAMPLES &&
+        isSpreadConsistent(headSpread, BASELINE_MAX_HEAD_SPREAD) &&
+        headSamples.length >= BASELINE_TARGET_HEAD_SAMPLES
+      );
+      const gazeSpread = measureSampleSpread(gazeSamples, GAZE_BASELINE_SAMPLE_KEYS);
+      const gazeReady = !gazeTrackingEnabled || (
+        gazeSamples.length >= BASELINE_MIN_GAZE_SAMPLES &&
+        isSpreadConsistent(gazeSpread, BASELINE_MAX_GAZE_SPREAD) &&
+        gazeSamples.length >= BASELINE_TARGET_GAZE_SAMPLES
+      );
+
+      if (headReady && gazeReady) {
+        break;
       }
 
       await new Promise((resolve) => window.setTimeout(resolve, BASELINE_CAPTURE_PAUSE_MS));
     }
 
-    const spread = measureSampleSpread(headSamples, BASELINE_SAMPLE_KEYS);
-    const consistencyPassed = (
-      headSamples.length >= BASELINE_MIN_HEAD_SAMPLES &&
-      isSpreadConsistent(spread, BASELINE_MAX_HEAD_SPREAD)
+    const headSpread = measureSampleSpread(headSamples, HEAD_BASELINE_SAMPLE_KEYS);
+    const headConsistencyPassed = (
+      !headMovementEnabled ||
+      (
+        headSamples.length >= BASELINE_MIN_HEAD_SAMPLES &&
+        isSpreadConsistent(headSpread, BASELINE_MAX_HEAD_SPREAD)
+      )
     );
-    const headBaseline = consistencyPassed
-      ? summarizeSamples(headSamples, BASELINE_SAMPLE_KEYS)
+    const gazeSpread = measureSampleSpread(gazeSamples, GAZE_BASELINE_SAMPLE_KEYS);
+    const gazeConsistencyPassed = (
+      !gazeTrackingEnabled ||
+      (
+        gazeSamples.length >= BASELINE_MIN_GAZE_SAMPLES &&
+        isSpreadConsistent(gazeSpread, BASELINE_MAX_GAZE_SPREAD)
+      )
+    );
+    const headBaseline = headConsistencyPassed && headMovementEnabled
+      ? summarizeSamples(headSamples, HEAD_BASELINE_SAMPLE_KEYS)
+      : null;
+    const nextGazeBaseline = gazeConsistencyPassed && gazeTrackingEnabled
+      ? summarizeSamples(gazeSamples, GAZE_BASELINE_SAMPLE_KEYS)
       : null;
 
     return {
       head: headBaseline,
+      gaze: nextGazeBaseline,
       debug: {
-        acceptedSamples: headSamples.length,
         attemptsUsed,
+        headAcceptedSamples: headSamples.length,
+        gazeAcceptedSamples: gazeSamples.length,
         averagePoseQuality: headSamples.length > 0
           ? Number((poseQualityTotal / headSamples.length).toFixed(3))
           : 0,
-        spread: spread
+        averageGazeFaceConfidence: gazeSamples.length > 0
+          ? Number((gazeConfidenceTotal / gazeSamples.length).toFixed(3))
+          : 0,
+        headSpread: headSpread
           ? Object.fromEntries(
-            Object.entries(spread).map(([key, value]) => [key, Number(value.toFixed(4))])
+            Object.entries(headSpread).map(([key, value]) => [key, Number(value.toFixed(4))])
           )
           : null,
-        consistencyPassed,
+        gazeSpread: gazeSpread
+          ? Object.fromEntries(
+            Object.entries(gazeSpread).map(([key, value]) => [key, Number(value.toFixed(4))])
+          )
+          : null,
+        headConsistencyPassed,
+        gazeConsistencyPassed,
       },
     };
-  }, [captureIdentityFrame, examId, headMovementEnabled, session?._id]);
+  }, [attentionBaselineEnabled, captureIdentityFrame, examId, gazeTrackingEnabled, headMovementEnabled, session?._id]);
 
   const queueBaselineCalibration = useCallback(async () => {
-    if (!headMovementEnabled) {
+    if (!attentionBaselineEnabled) {
       setHeadPoseBaseline(null);
+      setGazeBaseline(null);
       setBaselineCalibrationInfo({
         status: "ready",
         missing: [],
@@ -1094,12 +1260,16 @@ const ExamInterface = () => {
       });
       return {
         head: null,
+        gaze: null,
         ready: true,
         debug: null,
       };
     }
 
-    if (isValidHeadPoseBaseline(headPoseBaseline)) {
+    if (
+      (!headMovementEnabled || isValidHeadPoseBaseline(headPoseBaseline)) &&
+      (!gazeTrackingEnabled || isValidGazeBaseline(gazeBaseline))
+    ) {
       setBaselineCalibrationInfo((prev) => ({
         status: "ready",
         missing: [],
@@ -1107,6 +1277,7 @@ const ExamInterface = () => {
       }));
       return {
         head: headPoseBaseline,
+        gaze: gazeBaseline,
         ready: true,
         debug: baselineCalibrationInfo.debug || null,
       };
@@ -1124,11 +1295,17 @@ const ExamInterface = () => {
     baselineCalibrationRef.current = calibrateAttentionBaseline()
       .then((baseline) => {
         const nextHeadBaseline = baseline?.head || null;
+        const nextGazeBaseline = baseline?.gaze || null;
         const missing = getMissingBaselineParts({
           head: nextHeadBaseline,
+          gaze: nextGazeBaseline,
+        }, {
+          headRequired: headMovementEnabled,
+          gazeRequired: gazeTrackingEnabled,
         });
 
         setHeadPoseBaseline(nextHeadBaseline);
+        setGazeBaseline(nextGazeBaseline);
         setBaselineCalibrationInfo({
           status: missing.length === 0 ? "ready" : "retrying",
           missing,
@@ -1141,19 +1318,31 @@ const ExamInterface = () => {
       })
       .catch(() => {
         setHeadPoseBaseline(null);
+        setGazeBaseline(null);
         setBaselineCalibrationInfo({
           status: "retrying",
-          missing: ["head"],
+          missing: getMissingBaselineParts({}, {
+            headRequired: headMovementEnabled,
+            gazeRequired: gazeTrackingEnabled,
+          }),
           debug: null,
         });
-        return { head: null, ready: false, debug: null };
+        return { head: null, gaze: null, ready: false, debug: null };
       })
       .finally(() => {
         baselineCalibrationRef.current = null;
       });
 
     return baselineCalibrationRef.current;
-  }, [baselineCalibrationInfo.debug, calibrateAttentionBaseline, headMovementEnabled, headPoseBaseline]);
+  }, [
+    attentionBaselineEnabled,
+    baselineCalibrationInfo.debug,
+    calibrateAttentionBaseline,
+    gazeBaseline,
+    gazeTrackingEnabled,
+    headMovementEnabled,
+    headPoseBaseline,
+  ]);
 
   useEffect(() => {
     if (baselineRetryTimeoutRef.current) {
@@ -1161,12 +1350,16 @@ const ExamInterface = () => {
       baselineRetryTimeoutRef.current = null;
     }
 
-    if (!examReady || submitted || !headMovementEnabled) {
+    if (!examReady || submitted || !attentionBaselineEnabled) {
       return undefined;
     }
 
     const missing = getMissingBaselineParts({
       head: headPoseBaseline,
+      gaze: gazeBaseline,
+    }, {
+      headRequired: headMovementEnabled,
+      gazeRequired: gazeTrackingEnabled,
     });
 
     if (missing.length === 0) {
@@ -1194,7 +1387,16 @@ const ExamInterface = () => {
         baselineRetryTimeoutRef.current = null;
       }
     };
-  }, [examReady, submitted, headMovementEnabled, headPoseBaseline, queueBaselineCalibration]);
+  }, [
+    attentionBaselineEnabled,
+    examReady,
+    gazeBaseline,
+    gazeTrackingEnabled,
+    headMovementEnabled,
+    headPoseBaseline,
+    queueBaselineCalibration,
+    submitted,
+  ]);
 
   const exitFullscreenSafely = useCallback(async () => {
     fullscreenReadyRef.current = false;
@@ -1321,7 +1523,7 @@ const ExamInterface = () => {
       pendingVerificationImageRef.current = verificationResult.verificationImage || "";
     }
 
-    if (!headMovementEnabled) {
+    if (!attentionBaselineEnabled) {
       setStartReady(true);
       setIdentityStatus(faceVerificationEnabled ? "verified" : "ready");
       setIdentityMessage(
@@ -1336,8 +1538,8 @@ const ExamInterface = () => {
     setIdentityStatus(faceVerificationEnabled ? "verified" : "ready");
     setIdentityMessage(
       faceVerificationEnabled
-        ? "Face verified. Capturing a short head pose baseline before the exam starts..."
-        : "Capturing a short head pose baseline before the exam starts..."
+        ? `Face verified. Capturing a short ${baselineSetupLabel} before the exam starts...`
+        : `Capturing a short ${baselineSetupLabel} before the exam starts...`
     );
 
     try {
@@ -1347,8 +1549,8 @@ const ExamInterface = () => {
         setIdentityStatus(faceVerificationEnabled ? "verified" : "ready");
         setIdentityMessage(
           faceVerificationEnabled
-            ? "Face verified, but head pose baseline needs cleaner centered samples. Stay still and click again."
-            : "Head pose baseline needs cleaner centered samples. Stay still and click again."
+            ? `Face verified, but the ${baselineSetupLabel} needs cleaner centered samples. Stay still and click again.`
+            : `${baselineSetupLabel.charAt(0).toUpperCase()}${baselineSetupLabel.slice(1)} needs cleaner centered samples. Stay still and click again.`
         );
         return;
       }
@@ -1357,8 +1559,8 @@ const ExamInterface = () => {
       setIdentityStatus(faceVerificationEnabled ? "verified" : "ready");
       setIdentityMessage(
         faceVerificationEnabled
-          ? "Face verified and head pose baseline is ready. Click once more to enter fullscreen and start the exam."
-          : "Head pose baseline is ready. Click once more to enter fullscreen and start the exam."
+          ? `Face verified and the ${baselineSetupLabel} is ready. Click once more to enter fullscreen and start the exam.`
+          : `${baselineSetupLabel.charAt(0).toUpperCase()}${baselineSetupLabel.slice(1)} is ready. Click once more to enter fullscreen and start the exam.`
       );
     } finally {
       setIdentityBusy(false);
@@ -1630,17 +1832,17 @@ const ExamInterface = () => {
     ? "Working..."
     : startReady
     ? "Enter Fullscreen & Start"
-    : headMovementEnabled && identityStatus === "verified"
+    : attentionBaselineEnabled && identityStatus === "verified"
     ? "Finish Baseline"
     : faceVerificationEnabled
     ? "Verify Face & Continue"
     : "Continue to Exam Setup";
 
-  const setupPanelTitle = faceVerificationEnabled && headMovementEnabled
+  const setupPanelTitle = faceVerificationEnabled && attentionBaselineEnabled
     ? "Identity & Baseline Check"
     : faceVerificationEnabled
     ? "Identity Check"
-    : headMovementEnabled
+    : attentionBaselineEnabled
     ? "Baseline Check"
     : audioDetectionEnabled
     ? "Pre-Exam Check"

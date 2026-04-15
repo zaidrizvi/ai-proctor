@@ -1,6 +1,7 @@
 const DEFAULT_PROCTOR_SETTINGS = {
   faceDetection: true,
   faceVerification: true,
+  gazeTracking: false,
   objectDetection: true,
   audioDetection: true,
   headMovement: true,
@@ -32,6 +33,10 @@ export const resolveExamProctorSettings = (rawSettings = {}) => {
       source.faceDetection,
       DEFAULT_PROCTOR_SETTINGS.faceVerification
     ),
+    gazeTracking: firstBoolean(
+      source.gazeTracking,
+      DEFAULT_PROCTOR_SETTINGS.gazeTracking
+    ),
     objectDetection: firstBoolean(
       source.objectDetection,
       DEFAULT_PROCTOR_SETTINGS.objectDetection
@@ -55,12 +60,14 @@ export const isProctorEventEnabled = (settings, eventType) => {
     face_not_detected: normalized.faceDetection,
     multiple_faces: normalized.faceDetection,
     face_mismatch: normalized.faceVerification,
+    gaze_away: normalized.gazeTracking,
     head_turned: normalized.headMovement,
     audio_detected: normalized.audioDetection,
     object_detected: normalized.objectDetection,
     camera_frame_unavailable:
       normalized.faceDetection ||
       normalized.faceVerification ||
+      normalized.gazeTracking ||
       normalized.headMovement ||
       normalized.objectDetection,
   };
@@ -77,8 +84,8 @@ export const isVisualProctoringEnabled = (settings) => {
   return Boolean(
     normalized.faceDetection ||
       normalized.faceVerification ||
+      normalized.gazeTracking ||
       normalized.headMovement ||
       normalized.objectDetection
   );
 };
-

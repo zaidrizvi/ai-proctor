@@ -1,3 +1,5 @@
+import { getExamProctorSettings } from "./proctorSettings.js";
+
 const normalizeId = (value) => {
   if (!value) return "";
   if (typeof value === "string") return value;
@@ -81,6 +83,7 @@ export const validateExamSchedule = (scheduledAt, expiresAt) => {
 const EVENT_PROCTOR_SETTING_MAP = {
   face_not_detected: "faceDetection",
   multiple_faces: "faceDetection",
+  gaze_away: "gazeTracking",
   face_mismatch: "faceVerification",
   head_turned: "headMovement",
   audio_detected: "audioDetection",
@@ -98,4 +101,3 @@ export const isProctorEventEnabled = (exam, eventType) => {
   const settings = getExamProctorSettings(exam);
   return Boolean(settings[settingKey]);
 };
-import { getExamProctorSettings } from "./proctorSettings.js";

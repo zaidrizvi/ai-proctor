@@ -27,6 +27,7 @@ const severityColor = (severity) => {
 const eventLabel = (type) => ({
   face_not_detected: "Face Not Detected",
   multiple_faces: "Multiple Faces",
+  gaze_away: "Gaze Away",
   head_turned: "Head Turned",
   audio_detected: "Audio Detected",
   object_detected: "Object Detected",

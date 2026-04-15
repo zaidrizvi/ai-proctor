@@ -1,6 +1,7 @@
 export const PROCTOR_EVENTS = {
   FACE_NOT_DETECTED: "face_not_detected",
   MULTIPLE_FACES: "multiple_faces",
+  GAZE_AWAY: "gaze_away",
   HEAD_TURNED: "head_turned",
   AUDIO_DETECTED: "audio_detected",
   OBJECT_DETECTED: "object_detected",

@@ -7,6 +7,8 @@ numpy
 pillow
 python-multipart
 ultralytics
+torch
+torchvision
 tf-keras
 openvino
 python-dotenv

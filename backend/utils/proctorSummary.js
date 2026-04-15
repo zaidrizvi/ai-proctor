@@ -53,6 +53,12 @@ const EVENT_SCORING_RULES = {
     mergeWindowMs: 8_000,
     group: "attention",
   },
+  gaze_away: {
+    weight: 0.08,
+    severityScale: 2.8,
+    mergeWindowMs: 7_000,
+    group: "attention",
+  },
   audio_detected: {
     weight: 0.09,
     severityScale: 2.4,
@@ -264,6 +270,13 @@ const calculateCoordinationBonus = (incidents = []) => {
     if (eventTypes.length >= 3) {
       bonus += 8;
     } else if (eventTypes.length >= 2) {
+      bonus += 4;
+    }
+
+    if (
+      eventTypes.includes("head_turned") &&
+      eventTypes.includes("gaze_away")
+    ) {
       bonus += 4;
     }
 

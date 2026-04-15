@@ -22,6 +22,7 @@ This repository is prepared for deployment as a Hugging Face Docker Space.
 - `POST /face/reference-embedding`
 - `POST /face/verify`
 - `POST /head/analyze`
+- `POST /gaze/analyze`
 - `POST /objects/detect`
 - `POST /audio/analyze`
 
@@ -41,9 +42,11 @@ This repository is prepared for deployment as a Hugging Face Docker Space.
 
 ## Important notes
 
-- This service is heavy for free CPU hosting because it uses DeepFace, TensorFlow, MediaPipe, OpenVINO, and YOLO.
+- This service is heavy for free CPU hosting because it uses DeepFace, TensorFlow, MediaPipe, PyTorch, OpenVINO, and YOLO.
 - First startup can take a while while models import and initialize.
 - If the free CPU Space is unstable, keep frontend/backend deployed and continue using local ML through ngrok for demos.
+- L2CS-Net gaze tracking expects a pretrained checkpoint at `models/l2cs/L2CSNet_gaze360.pkl` by default.
+- You can override the checkpoint path with `L2CS_WEIGHTS_PATH` and the backbone with `L2CS_ARCH` (`ResNet18`, `ResNet34`, `ResNet50`, `ResNet101`, or `ResNet152`).
 
 ## Local run
 

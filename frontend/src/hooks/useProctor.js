@@ -10,10 +10,14 @@ const PRESENCE_MULTIPLE_FACES_CONFIRM_STREAK = 2;
 const HEAD_TURN_STREAK_TO_ALERT = 2;
 const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
 const HEAD_TURN_RECOVERY_STREAK = 2;
+const GAZE_AWAY_STREAK_TO_ALERT = 2;
+const STRONG_GAZE_AWAY_STREAK_TO_ALERT = 1;
+const GAZE_AWAY_RECOVERY_STREAK = 2;
 const NO_FRAME_STREAK_TO_ALERT = 2;
 const FACE_MISMATCH_STREAK_TO_ALERT = 2;
 const FACE_MATCH_RECOVERY_STREAK = 2;
 const HEAD_TURN_ALERT_COOLDOWN_MS = 2000;
+const GAZE_AWAY_ALERT_COOLDOWN_MS = 2200;
 const OBJECT_DETECTED_STREAK_TO_ALERT = 2;
 const PRIORITY_OBJECT_DETECTED_STREAK_TO_ALERT = 1;
 const OBJECT_ALERT_COOLDOWN_MS = 2000;
@@ -30,6 +34,10 @@ const MIN_HEAD_POSE_QUALITY_FOR_NO_FACE_GRACE = 0.42;
 const MIN_FACE_CONFIDENCE_FOR_STABLE_ALERTS = 0.54;
 const MIN_FACE_AREA_RATIO_FOR_STABLE_ALERTS = 0.024;
 const MIN_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.02;
+const MIN_GAZE_SCORE_FOR_ALERT = 0.98;
+const STRONG_GAZE_SCORE_FOR_ALERT = 1.16;
+const MIN_GAZE_FACE_CONFIDENCE_FOR_ALERT = 0.5;
+const MIN_GAZE_FACE_AREA_RATIO_FOR_ALERT = 0.024;
 const MIN_DOWNWARD_HEAD_PITCH_SCORE_FOR_ALERT = 1.28;
 const MIN_DOWNWARD_HEAD_NOSE_SCORE_FOR_ALERT = 1.18;
 const MIN_DOWNWARD_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.16;
@@ -73,9 +81,12 @@ const useProctor = ({
   referenceFace = "",
   referenceFaceEmbedding = [],
   headPoseBaseline = null,
+  gazeBaseline = null,
   suppressHeadTurnAlerts = false,
+  suppressGazeAlerts = false,
   faceDetectionEnabled = true,
   faceVerificationEnabled = true,
+  gazeTrackingEnabled = true,
   headMovementEnabled = true,
   objectDetectionEnabled = true,
   onAlert,
@@ -122,6 +133,7 @@ const useProctor = ({
     faceMissing: false,
     multipleFaces: false,
     headTurned: false,
+    gazeAway: false,
     objectDetected: false,
     cameraFrameUnavailable: false,
   });
@@ -129,6 +141,7 @@ const useProctor = ({
     objectDetected: 0,
     faceMismatch: 0,
     headTurned: 0,
+    gazeAway: 0,
     multipleFaces: 0,
     mlUnavailable: 0,
     cameraFrameUnavailable: 0,
@@ -140,6 +153,8 @@ const useProctor = ({
     presenceMultipleFaces: 0,
     headTurned: 0,
     headTurnRecovery: 0,
+    gazeAway: 0,
+    gazeRecovery: 0,
     objectDetected: 0,
     faceMismatch: 0,
     faceVerified: 0,
@@ -149,6 +164,7 @@ const useProctor = ({
     multiple_faces: 0,
     face_mismatch: 0,
     head_turned: 0,
+    gaze_away: 0,
     tab_switch: 0,
     fullscreen_exit: 0,
     audio_detected: 0,
@@ -183,6 +199,7 @@ const useProctor = ({
   const visualMonitoringEnabled =
     faceDetectionEnabled ||
     faceVerificationEnabled ||
+    gazeTrackingEnabled ||
     headMovementEnabled ||
     objectDetectionEnabled;
 
@@ -639,6 +656,81 @@ const useProctor = ({
     }
   }, [decayStreak, emitAlert, hasRecentDownwardHeadPoseGrace, headMovementEnabled, suppressHeadTurnAlerts]);
 
+  const processGazeResult = useCallback((gazeResult, now, faceState = {}, token) => {
+    const shouldSuppressGaze =
+      !gazeTrackingEnabled ||
+      suppressGazeAlerts ||
+      faceState.identityMismatchVisible ||
+      faceState.noFace;
+
+    const recoverGazeSignal = (clearImmediately = false) => {
+      decayStreak("gazeAway");
+      streaksRef.current.gazeRecovery += 1;
+
+      if (clearImmediately || streaksRef.current.gazeRecovery >= GAZE_AWAY_RECOVERY_STREAK) {
+        activeFlagsRef.current.gazeAway = false;
+      }
+    };
+
+    const commitGazeSignal = (isStrong = false) => {
+      streaksRef.current.gazeAway += 1;
+      streaksRef.current.gazeRecovery = 0;
+
+      const gazeThreshold = isStrong
+        ? STRONG_GAZE_AWAY_STREAK_TO_ALERT
+        : GAZE_AWAY_STREAK_TO_ALERT;
+
+      if (
+        streaksRef.current.gazeAway >= gazeThreshold &&
+        !activeFlagsRef.current.gazeAway &&
+        now - lastAlertAtRef.current.gazeAway >= GAZE_AWAY_ALERT_COOLDOWN_MS
+      ) {
+        activeFlagsRef.current.gazeAway = true;
+        lastAlertAtRef.current.gazeAway = now;
+        countersRef.current.gaze_away += 1;
+        emitAlert(token, "gaze_away", "low", "Student gaze moved away from the screen");
+      }
+    };
+
+    if (shouldSuppressGaze) {
+      streaksRef.current.gazeRecovery = 0;
+      decayStreak("gazeAway");
+      activeFlagsRef.current.gazeAway = false;
+      return;
+    }
+
+    if (gazeResult?.status !== "fulfilled") {
+      recoverGazeSignal();
+      return;
+    }
+
+    const gaze = gazeResult.value.data;
+    if (!gaze?.face_detected) {
+      recoverGazeSignal();
+      return;
+    }
+
+    const faceConfidence = Number(gaze.face_confidence || 0);
+    const faceAreaRatio = Number(gaze.face_area_ratio || 0);
+    if (
+      faceConfidence < MIN_GAZE_FACE_CONFIDENCE_FOR_ALERT ||
+      faceAreaRatio < MIN_GAZE_FACE_AREA_RATIO_FOR_ALERT
+    ) {
+      recoverGazeSignal();
+      return;
+    }
+
+    const gazeScore = Number(gaze.combined_gaze_score || gaze.gaze_score || 0);
+    const lookingAway = gaze.event === "gaze_away";
+
+    if (lookingAway && gazeScore >= MIN_GAZE_SCORE_FOR_ALERT) {
+      commitGazeSignal(gazeScore >= STRONG_GAZE_SCORE_FOR_ALERT);
+      return;
+    }
+
+    recoverGazeSignal();
+  }, [decayStreak, emitAlert, gazeTrackingEnabled, suppressGazeAlerts]);
+
   const processObjectResult = useCallback((response, token) => {
     if (!isTokenActive(token)) {
       return;
@@ -1005,6 +1097,20 @@ const useProctor = ({
               }),
             }]
           : []),
+        ...(gazeTrackingEnabled
+          ? [{
+              key: "gaze",
+              promise: postMlMultipart("/gaze/analyze", {
+                frame,
+                baseline: gazeBaseline,
+                tracker_id: activeTrackerId,
+              }, {
+                label: "proctor.gaze.analyze",
+                timeoutMs: 10000,
+                warmup: true,
+              }),
+            }]
+          : []),
       ];
 
       const criticalResults = await Promise.allSettled(
@@ -1015,6 +1121,7 @@ const useProctor = ({
       );
       const faceRes = criticalResultMap.face ?? null;
       const headRes = criticalResultMap.head ?? null;
+      const gazeRes = criticalResultMap.gaze ?? null;
 
       criticalResults.forEach((result, index) => {
         if (result.status === "rejected") {
@@ -1027,7 +1134,7 @@ const useProctor = ({
         }
       });
 
-      const criticalCompletedCount = [faceRes, headRes].filter(
+      const criticalCompletedCount = [faceRes, headRes, gazeRes].filter(
         (result) => result?.status === "fulfilled"
       ).length;
       const now = Date.now();
@@ -1066,6 +1173,7 @@ const useProctor = ({
             multipleFaces: false,
           };
       processHeadResult(headRes, now, faceState, token);
+      processGazeResult(gazeRes, now, faceState, token);
       scheduleBackgroundTasks(frame, token, faceState, trackerPresence);
     } catch (err) {
       if (isTokenActive(token)) {
@@ -1082,12 +1190,15 @@ const useProctor = ({
     deriveTrackerFacePresence,
     emitAlert,
     faceDetectionEnabled,
+    gazeTrackingEnabled,
     headMovementEnabled,
+    gazeBaseline,
     headPoseBaseline,
     activeTrackerId,
     isTokenActive,
     onMlFrame,
     processFaceResult,
+    processGazeResult,
     processHeadResult,
     refreshRecentHeadPoseState,
     refreshMultipleFacesState,
@@ -1167,6 +1278,7 @@ const useProctor = ({
         faceMissing: false,
         multipleFaces: false,
         headTurned: false,
+        gazeAway: false,
         objectDetected: false,
         cameraFrameUnavailable: false,
       };
@@ -1177,6 +1289,8 @@ const useProctor = ({
         presenceMultipleFaces: 0,
         headTurned: 0,
         headTurnRecovery: 0,
+        gazeAway: 0,
+        gazeRecovery: 0,
         objectDetected: 0,
         faceMismatch: 0,
         faceVerified: 0,

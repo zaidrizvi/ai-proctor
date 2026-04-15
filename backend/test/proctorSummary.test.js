@@ -121,6 +121,17 @@ test("coordination bonus increases score for multi-signal windows", () => {
   assert.ok(coordinatedSignals.suspicionScore > separateSignals.suspicionScore);
 });
 
+test("gaze incidents affect scoring and collapse within their merge window", () => {
+  const summary = summarizeProctorEvents([
+    makeEvent("gaze_away", 0, "medium"),
+    makeEvent("gaze_away", 6_500, "high"),
+  ]);
+
+  assert.equal(summary.eventCounts.gaze_away, 2);
+  assert.equal(summary.incidentCounts.gaze_away, 1);
+  assert.ok(summary.suspicionScore > 0);
+});
+
 test("unknown events remain counted but do not affect scoring", () => {
   const summary = summarizeProctorEvents([
     makeEvent("unknown_signal", 0, "high"),

@@ -19,6 +19,7 @@ import StatusBadge from "../shared/StatusBadge.jsx";
 const defaultProctorSettings = {
   faceDetection: true,
   faceVerification: true,
+  gazeTracking: true,
   objectDetection: true,
   audioDetection: true,
   headMovement: true,
@@ -37,6 +38,11 @@ const proctorSettingFields = [
     key: "faceVerification",
     label: "Face verification",
     description: "Require reference-face verification before identity checks run.",
+  },
+  {
+    key: "gazeTracking",
+    label: "Gaze tracking",
+    description: "Use L2CS-Net to flag sustained gaze drift away from the screen.",
   },
   {
     key: "headMovement",

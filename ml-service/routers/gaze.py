@@ -1,380 +1,494 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 import numpy as np
-import cv2
 import os
 import sys
+import time
+import traceback
+from threading import Lock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.frame_utils import base64_to_frame
+from utils.frame_utils import get_frame_from_payload, parse_json_field, parse_request_payload
+from routers.face import extract_confident_faces, _best_face_from_detections
 
 router = APIRouter()
 
-MODEL_ROOT = os.getenv(
-    "OPENVINO_MODEL_ROOT",
+_torch = None
+_nn = None
+_transforms = None
+_model = None
+_model_device = None
+_tracker_states: dict[str, dict] = {}
+_tracker_state_lock = Lock()
+
+MODEL_PATH = os.getenv(
+    "L2CS_WEIGHTS_PATH",
     os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "models",
-        "openvino",
-        "intel",
+        "l2cs",
+        "L2CSNet_gaze360.pkl",
     ),
 )
-PRECISION = os.getenv("OPENVINO_MODEL_PRECISION", "FP16")
-FACE_DETECTION_THRESHOLD = 0.52
-MIN_FACE_CONFIDENCE_FOR_GAZE = 0.52
-MIN_GAZE_FACE_AREA_RATIO = 0.028
-ABS_HORIZONTAL_ANGLE_THRESHOLD = 20.0
-ABS_VERTICAL_ANGLE_THRESHOLD = 13.0
-DELTA_HORIZONTAL_ANGLE_THRESHOLD = 12.0
-DELTA_VERTICAL_ANGLE_THRESHOLD = 7.5
-HEAD_YAW_ALLOWANCE_FACTOR = 0.45
-HEAD_PITCH_ALLOWANCE_FACTOR = 0.2
-DOWNWARD_HEAD_PITCH_ALLOWANCE_FACTOR = 0.08
-DELTA_HORIZONTAL_DEADZONE = 2.5
-DELTA_VERTICAL_DEADZONE = 2.0
-ABS_DOWNWARD_ANGLE_THRESHOLD = 10.5
-DELTA_DOWNWARD_ANGLE_THRESHOLD = 6.5
-DOWNWARD_PITCH_SUPPORT_THRESHOLD = 7.0
-
-_pipelines = None
-_Core = None
+MODEL_ARCH = os.getenv("L2CS_ARCH", "ResNet50")
+MODEL_DEVICE = os.getenv("L2CS_DEVICE", "cpu")
+NUM_BINS = 90
+BIN_WIDTH_DEGREES = 4.0
+BIN_START_DEGREES = -180.0
+FACE_CONFIDENCE_THRESHOLD = 0.5
+MIN_FACE_AREA_RATIO = 0.024
+ABS_YAW_THRESHOLD = 24.0
+ABS_PITCH_THRESHOLD = 18.0
+DELTA_YAW_THRESHOLD = 12.0
+DELTA_PITCH_THRESHOLD = 10.0
+DELTA_YAW_DEADZONE = 2.0
+DELTA_PITCH_DEADZONE = 2.0
+TRACKER_STATE_TTL_SECONDS = 4.5
+TRACKER_RESET_GAP_SECONDS = 1.8
+GAZE_SMOOTHING_ALPHA = 0.56
+STRONG_SIGNAL_GAZE_SMOOTHING_ALPHA = 0.74
 
 
 class GazeBaseline(BaseModel):
-    horizontal_angle: float
-    vertical_angle: float
+    pitch: float
+    yaw: float
 
 
-class FrameRequest(BaseModel):
-    frame: str
-    baseline: GazeBaseline | None = None
+def get_torch_modules():
+    global _torch, _nn, _transforms
+
+    if _torch is None or _nn is None or _transforms is None:
+        import torch
+        import torch.nn as nn
+        from torchvision import transforms
+
+        _torch = torch
+        _nn = nn
+        _transforms = transforms
+
+    return _torch, _nn, _transforms
 
 
-def get_openvino_core():
-    global _Core
+def _build_transform():
+    _, _, transforms = get_torch_modules()
 
-    if _Core is None:
-        from openvino.runtime import Core
-
-        _Core = Core
-
-    return _Core
-
-
-def _model_path(model_name: str) -> str:
-    return os.path.join(MODEL_ROOT, model_name, PRECISION, f"{model_name}.xml")
-
-
-def _preprocess(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    resized = cv2.resize(image, size)
-    chw = resized.transpose(2, 0, 1)[np.newaxis, ...]
-    return chw.astype(np.float32)
+    return transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize(448),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+    ])
 
 
-def _clip_box(x1: float, y1: float, x2: float, y2: float, width: int, height: int):
-    left = max(0, int(round(x1)))
-    top = max(0, int(round(y1)))
-    right = min(width, int(round(x2)))
-    bottom = min(height, int(round(y2)))
-    return left, top, right, bottom
+def _get_transform():
+    global _transforms
+
+    if _transforms is None:
+        get_torch_modules()
+
+    if not hasattr(_get_transform, "_value"):
+        _get_transform._value = _build_transform()
+
+    return _get_transform._value
 
 
-def _crop_square(image: np.ndarray, center: tuple[float, float], side: float) -> np.ndarray | None:
-    height, width = image.shape[:2]
-    half = side / 2.0
-    left, top, right, bottom = _clip_box(
-        center[0] - half,
-        center[1] - half,
-        center[0] + half,
-        center[1] + half,
-        width,
-        height,
+class L2CSNet:
+    @staticmethod
+    def build(arch: str, num_bins: int):
+        torch, nn, _ = get_torch_modules()
+        from torchvision import models
+
+        class L2CS(nn.Module):
+            def __init__(self, block, layers, bins):
+                super().__init__()
+                self.inplanes = 64
+                self.conv1 = nn.Conv2d(
+                    3,
+                    64,
+                    kernel_size=7,
+                    stride=2,
+                    padding=3,
+                    bias=False,
+                )
+                self.bn1 = nn.BatchNorm2d(64)
+                self.relu = nn.ReLU(inplace=True)
+                self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+                self.layer1 = self._make_layer(block, 64, layers[0])
+                self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+                self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+                self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+                self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+                self.fc_yaw_gaze = nn.Linear(512 * block.expansion, bins)
+                self.fc_pitch_gaze = nn.Linear(512 * block.expansion, bins)
+                self.fc_finetune = nn.Linear((512 * block.expansion) + 3, 3)
+
+                for module in self.modules():
+                    if isinstance(module, nn.Conv2d):
+                        kernel_area = module.kernel_size[0] * module.kernel_size[1]
+                        module.weight.data.normal_(
+                            0,
+                            np.sqrt(2.0 / (kernel_area * module.out_channels)),
+                        )
+                    elif isinstance(module, nn.BatchNorm2d):
+                        module.weight.data.fill_(1)
+                        module.bias.data.zero_()
+
+            def _make_layer(self, block, planes, blocks, stride=1):
+                downsample = None
+                if stride != 1 or self.inplanes != planes * block.expansion:
+                    downsample = nn.Sequential(
+                        nn.Conv2d(
+                            self.inplanes,
+                            planes * block.expansion,
+                            kernel_size=1,
+                            stride=stride,
+                            bias=False,
+                        ),
+                        nn.BatchNorm2d(planes * block.expansion),
+                    )
+
+                layers = [block(self.inplanes, planes, stride, downsample)]
+                self.inplanes = planes * block.expansion
+                for _ in range(1, blocks):
+                    layers.append(block(self.inplanes, planes))
+
+                return nn.Sequential(*layers)
+
+            def forward(self, x):
+                x = self.conv1(x)
+                x = self.bn1(x)
+                x = self.relu(x)
+                x = self.maxpool(x)
+                x = self.layer1(x)
+                x = self.layer2(x)
+                x = self.layer3(x)
+                x = self.layer4(x)
+                x = self.avgpool(x)
+                x = x.view(x.size(0), -1)
+                pre_yaw_gaze = self.fc_yaw_gaze(x)
+                pre_pitch_gaze = self.fc_pitch_gaze(x)
+                return pre_yaw_gaze, pre_pitch_gaze
+
+        if arch == "ResNet18":
+            return L2CS(models.resnet.BasicBlock, [2, 2, 2, 2], num_bins)
+        if arch == "ResNet34":
+            return L2CS(models.resnet.BasicBlock, [3, 4, 6, 3], num_bins)
+        if arch == "ResNet101":
+            return L2CS(models.resnet.Bottleneck, [3, 4, 23, 3], num_bins)
+        if arch == "ResNet152":
+            return L2CS(models.resnet.Bottleneck, [3, 8, 36, 3], num_bins)
+
+        return L2CS(models.resnet.Bottleneck, [3, 4, 6, 3], num_bins)
+
+
+def _normalize_state_dict(raw_state):
+    if not isinstance(raw_state, dict):
+        raise RuntimeError("Unsupported L2CS checkpoint format")
+
+    state_dict = raw_state.get("state_dict") or raw_state.get("model_state_dict") or raw_state
+    if not isinstance(state_dict, dict):
+        raise RuntimeError("Unsupported L2CS checkpoint state_dict")
+
+    normalized = {}
+    for key, value in state_dict.items():
+        normalized[key.removeprefix("module.")] = value
+
+    return normalized
+
+
+def get_model():
+    global _model, _model_device
+
+    if _model is not None and _model_device is not None:
+        return _model, _model_device
+
+    torch, _, _ = get_torch_modules()
+
+    if not os.path.exists(MODEL_PATH):
+        raise RuntimeError(
+            f"L2CS-Net weights not found at '{MODEL_PATH}'. "
+            "Download the pretrained gaze360 checkpoint and place it there."
+        )
+
+    device = torch.device(
+        MODEL_DEVICE if MODEL_DEVICE != "auto"
+        else "cuda:0" if torch.cuda.is_available() else "cpu"
     )
-    if right - left < 8 or bottom - top < 8:
-        return None
-    return image[top:bottom, left:right]
+    model = L2CSNet.build(MODEL_ARCH, NUM_BINS)
+    checkpoint = torch.load(MODEL_PATH, map_location=device)
+    state_dict = _normalize_state_dict(checkpoint)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+
+    required_keys = {"fc_yaw_gaze.weight", "fc_pitch_gaze.weight"}
+    if required_keys.intersection(set(missing_keys)):
+        raise RuntimeError(
+            f"L2CS-Net weights are incompatible with arch '{MODEL_ARCH}'. Missing keys: {missing_keys}"
+        )
+
+    if unexpected_keys:
+        print(f"L2CS-Net loaded with unexpected keys ignored: {unexpected_keys}")
+
+    model.to(device)
+    model.eval()
+    _model = model
+    _model_device = device
+    return _model, _model_device
 
 
-def _normalize_vector(vector: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(vector)
-    if norm == 0:
-        return vector
-    return vector / norm
+def _to_uint8_rgb(face_image: np.ndarray) -> np.ndarray:
+    if face_image is None or face_image.size == 0:
+        raise ValueError("Face crop is empty")
+
+    image = np.asarray(face_image)
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("Face crop must be an RGB image")
+
+    if image.dtype == np.uint8:
+        return image
+
+    if float(image.max()) <= 1.5:
+        image = image * 255.0
+
+    return np.clip(image, 0, 255).astype(np.uint8)
 
 
-def _compute_direction_scores(
-    horizontal_angle: float,
-    vertical_angle: float,
-    yaw: float,
-    pitch: float,
-    baseline_applied: bool,
-):
-    horizontal_threshold = DELTA_HORIZONTAL_ANGLE_THRESHOLD if baseline_applied else ABS_HORIZONTAL_ANGLE_THRESHOLD
-    vertical_threshold = DELTA_VERTICAL_ANGLE_THRESHOLD if baseline_applied else ABS_VERTICAL_ANGLE_THRESHOLD
-    vertical_is_downward = vertical_angle > 0.0 and pitch > 0.0
-    pitch_allowance_factor = (
-        DOWNWARD_HEAD_PITCH_ALLOWANCE_FACTOR
-        if vertical_is_downward
-        else HEAD_PITCH_ALLOWANCE_FACTOR
-    )
-
-    adjusted_horizontal = max(0.0, abs(horizontal_angle) - (abs(yaw) * HEAD_YAW_ALLOWANCE_FACTOR))
-    adjusted_vertical = max(0.0, abs(vertical_angle) - (abs(pitch) * pitch_allowance_factor))
-
-    scores = {
-        "horizontal": adjusted_horizontal / horizontal_threshold,
-        "vertical": adjusted_vertical / vertical_threshold,
-    }
-    return scores, adjusted_horizontal, adjusted_vertical
-
-
-def _apply_delta_deadzone(value: float | None, deadzone: float) -> float | None:
-    if value is None:
-        return None
+def _apply_delta_deadzone(value: float, deadzone: float) -> float:
     return 0.0 if abs(value) < deadzone else value
 
 
-def get_pipelines():
-    global _pipelines
+def _cleanup_tracker_states(now: float):
+    expired_ids = [
+        tracker_id
+        for tracker_id, state in _tracker_states.items()
+        if now - state["last_seen"] > TRACKER_STATE_TTL_SECONDS
+    ]
+    for tracker_id in expired_ids:
+        _tracker_states.pop(tracker_id, None)
 
-    if _pipelines is None:
-        required = {
-            "face": _model_path("face-detection-adas-0001"),
-            "landmarks": _model_path("facial-landmarks-35-adas-0002"),
-            "head_pose": _model_path("head-pose-estimation-adas-0001"),
-            "gaze": _model_path("gaze-estimation-adas-0002"),
+
+def _get_tracker_state(tracker_id: str | None):
+    if not tracker_id:
+        return None
+
+    now = time.monotonic()
+    with _tracker_state_lock:
+        _cleanup_tracker_states(now)
+        state = _tracker_states.get(tracker_id)
+        if state is None:
+            state = {
+                "lock": Lock(),
+                "last_seen": now,
+                "last_prediction_at": 0.0,
+                "angles": None,
+            }
+            _tracker_states[tracker_id] = state
+        else:
+            state["last_seen"] = now
+        return state
+
+
+def _smooth_gaze_angles(angles: dict, tracker_state: dict | None):
+    if tracker_state is None:
+        return {
+            **angles,
+            "smoothing_alpha": 1.0,
+            "tracker_reused": False,
+            "tracker_reset_reason": "stateless",
+            "tracker_frame_gap_ms": 0,
         }
 
-        missing = [path for path in required.values() if not os.path.exists(path)]
-        if missing:
-            raise RuntimeError(f"OpenVINO gaze model files not found: {missing}")
+    with tracker_state["lock"]:
+        previous_angles = tracker_state.get("angles")
+        now = time.monotonic()
+        tracker_state["last_seen"] = now
+        frame_gap_ms = 0
+        reset_reason = "none"
 
-        core = get_openvino_core()()
-        _pipelines = {
-            "face": core.compile_model(required["face"], "CPU"),
-            "landmarks": core.compile_model(required["landmarks"], "CPU"),
-            "head_pose": core.compile_model(required["head_pose"], "CPU"),
-            "gaze": core.compile_model(required["gaze"], "CPU"),
+        if previous_angles is None:
+            tracker_state["angles"] = dict(angles)
+            tracker_state["last_prediction_at"] = now
+            return {
+                **angles,
+                "smoothing_alpha": 1.0,
+                "tracker_reused": False,
+                "tracker_reset_reason": "cold_start",
+                "tracker_frame_gap_ms": 0,
+            }
+
+        last_prediction_at = float(tracker_state.get("last_prediction_at") or 0.0)
+        if last_prediction_at > 0.0:
+            frame_gap_ms = int(round((now - last_prediction_at) * 1000))
+
+        if last_prediction_at and (now - last_prediction_at) > TRACKER_RESET_GAP_SECONDS:
+            previous_angles = None
+            reset_reason = "frame_gap"
+
+        if previous_angles is None:
+            tracker_state["angles"] = dict(angles)
+            tracker_state["last_prediction_at"] = now
+            return {
+                **angles,
+                "smoothing_alpha": 1.0,
+                "tracker_reused": False,
+                "tracker_reset_reason": reset_reason,
+                "tracker_frame_gap_ms": frame_gap_ms,
+            }
+
+        signal_strength = max(abs(angles["yaw"]) / 24.0, abs(angles["pitch"]) / 18.0)
+        alpha = (
+            STRONG_SIGNAL_GAZE_SMOOTHING_ALPHA
+            if signal_strength >= 1.0
+            else GAZE_SMOOTHING_ALPHA
+        )
+
+        smoothed = {
+            "yaw": (previous_angles["yaw"] * (1.0 - alpha)) + (angles["yaw"] * alpha),
+            "pitch": (previous_angles["pitch"] * (1.0 - alpha)) + (angles["pitch"] * alpha),
+        }
+        tracker_state["angles"] = dict(smoothed)
+        tracker_state["last_prediction_at"] = now
+
+        return {
+            **smoothed,
+            "smoothing_alpha": round(alpha, 4),
+            "tracker_reused": True,
+            "tracker_reset_reason": reset_reason,
+            "tracker_frame_gap_ms": frame_gap_ms,
         }
 
-    return _pipelines
+
+def predict_gaze(face_rgb: np.ndarray):
+    torch, _, _ = get_torch_modules()
+    model, device = get_model()
+    transform = _get_transform()
+    idx_tensor = torch.arange(NUM_BINS, dtype=torch.float32, device=device)
+    face_tensor = transform(_to_uint8_rgb(face_rgb)).unsqueeze(0).to(device)
+    softmax = torch.nn.Softmax(dim=1)
+
+    with torch.no_grad():
+        gaze_pitch_logits, gaze_yaw_logits = model(face_tensor)
+        pitch_predicted = softmax(gaze_pitch_logits)
+        yaw_predicted = softmax(gaze_yaw_logits)
+        pitch = torch.sum(pitch_predicted * idx_tensor, dim=1) * BIN_WIDTH_DEGREES + BIN_START_DEGREES
+        yaw = torch.sum(yaw_predicted * idx_tensor, dim=1) * BIN_WIDTH_DEGREES + BIN_START_DEGREES
+
+    return {
+        "pitch": float(pitch.cpu().item()),
+        "yaw": float(yaw.cpu().item()),
+    }
 
 
-def detect_gaze(frame: np.ndarray, baseline: GazeBaseline | None = None):
-    pipelines = get_pipelines()
-
-    face_model = pipelines["face"]
-    landmarks_model = pipelines["landmarks"]
-    head_pose_model = pipelines["head_pose"]
-    gaze_model = pipelines["gaze"]
-
-    height, width = frame.shape[:2]
-    frame_area = max(float(height * width), 1.0)
-
-    face_result = face_model([_preprocess(frame, (672, 384))])
-    detections = face_result[face_model.output("detection_out")][0, 0]
-
-    best_face = None
-    best_area = -1.0
-    best_confidence = 0.0
-
-    for detection in detections:
-        confidence = float(detection[2])
-        if confidence < FACE_DETECTION_THRESHOLD:
-            continue
-
-        x1 = float(detection[3]) * width
-        y1 = float(detection[4]) * height
-        x2 = float(detection[5]) * width
-        y2 = float(detection[6]) * height
-        left, top, right, bottom = _clip_box(x1, y1, x2, y2, width, height)
-        area = max(0, right - left) * max(0, bottom - top)
-
-        if area > best_area:
-            best_area = area
-            best_confidence = confidence
-            best_face = (left, top, right, bottom)
-
+def detect_gaze(frame: np.ndarray, baseline: GazeBaseline | None = None, tracker_id: str | None = None):
+    faces, _ = extract_confident_faces(
+        frame,
+        min_confidence=FACE_CONFIDENCE_THRESHOLD,
+    )
+    best_face = _best_face_from_detections(frame, faces, MIN_FACE_AREA_RATIO)
     if best_face is None:
         return None
 
-    left, top, right, bottom = best_face
-    if best_confidence < MIN_FACE_CONFIDENCE_FOR_GAZE:
-        return None
-    if ((right - left) * (bottom - top)) / frame_area < MIN_GAZE_FACE_AREA_RATIO:
-        return None
+    tracker_state = _get_tracker_state(tracker_id)
+    face_rgb = best_face["face"]["face"]
+    raw_angles = predict_gaze(face_rgb)
+    smoothed_angles = _smooth_gaze_angles(raw_angles, tracker_state)
 
-    face_crop = frame[top:bottom, left:right]
-    if face_crop.size == 0:
-        return None
-
-    landmarks_result = landmarks_model([_preprocess(face_crop, (60, 60))])
-    raw_landmarks = landmarks_result[landmarks_model.output("align_fc3")][0]
-    landmarks = raw_landmarks.reshape(-1, 2)
-
-    face_h, face_w = face_crop.shape[:2]
-
-    left_eye_center = (
-        float((landmarks[0][0] + landmarks[1][0]) * 0.5 * face_w),
-        float((landmarks[0][1] + landmarks[1][1]) * 0.5 * face_h),
-    )
-    right_eye_center = (
-        float((landmarks[2][0] + landmarks[3][0]) * 0.5 * face_w),
-        float((landmarks[2][1] + landmarks[3][1]) * 0.5 * face_h),
-    )
-
-    left_eye_width = max(8.0, abs(float(landmarks[1][0] - landmarks[0][0])) * face_w)
-    right_eye_width = max(8.0, abs(float(landmarks[3][0] - landmarks[2][0])) * face_w)
-
-    left_eye_crop = _crop_square(face_crop, left_eye_center, left_eye_width * 2.0)
-    right_eye_crop = _crop_square(face_crop, right_eye_center, right_eye_width * 2.0)
-    if left_eye_crop is None or right_eye_crop is None:
-        return None
-
-    head_pose_result = head_pose_model([_preprocess(face_crop, (60, 60))])
-    yaw = float(head_pose_result[head_pose_model.output("angle_y_fc")][0][0])
-    pitch = float(head_pose_result[head_pose_model.output("angle_p_fc")][0][0])
-    roll = float(head_pose_result[head_pose_model.output("angle_r_fc")][0][0])
-
-    gaze_result = gaze_model({
-        "left_eye_image": _preprocess(left_eye_crop, (60, 60)),
-        "right_eye_image": _preprocess(right_eye_crop, (60, 60)),
-        "head_pose_angles": np.array([[yaw, pitch, roll]], dtype=np.float32),
-    })
-    gaze_vector = _normalize_vector(gaze_result[gaze_model.output("gaze_vector")][0])
-    if gaze_vector.shape[0] < 3 or float(gaze_vector[2]) <= 0.05:
-        return None
-
-    horizontal_angle = float(np.degrees(np.arctan2(gaze_vector[0], gaze_vector[2])))
-    vertical_angle = float(np.degrees(np.arctan2(-gaze_vector[1], gaze_vector[2])))
-
-    horizontal_delta = None
-    vertical_delta = None
-    baseline_applied = False
+    yaw = float(smoothed_angles["yaw"])
+    pitch = float(smoothed_angles["pitch"])
+    yaw_delta = None
+    pitch_delta = None
+    baseline_applied = baseline is not None
 
     if baseline is not None:
-        horizontal_delta = _apply_delta_deadzone(
-            horizontal_angle - baseline.horizontal_angle,
-            DELTA_HORIZONTAL_DEADZONE,
-        )
-        vertical_delta = _apply_delta_deadzone(
-            vertical_angle - baseline.vertical_angle,
-            DELTA_VERTICAL_DEADZONE,
-        )
-        baseline_applied = True
+        yaw_delta = _apply_delta_deadzone(yaw - baseline.yaw, DELTA_YAW_DEADZONE)
+        pitch_delta = _apply_delta_deadzone(pitch - baseline.pitch, DELTA_PITCH_DEADZONE)
 
-    horizontal_measure = horizontal_delta if baseline_applied else horizontal_angle
-    vertical_measure = vertical_delta if baseline_applied else vertical_angle
-    direction_scores, adjusted_horizontal, adjusted_vertical = _compute_direction_scores(
-        horizontal_measure,
-        vertical_measure,
-        yaw,
-        pitch,
-        baseline_applied,
-    )
-    max_score = max(direction_scores.values())
-    combined_score = (direction_scores["horizontal"] * 0.48) + (direction_scores["vertical"] * 0.52)
-    strong_horizontal_signal = direction_scores["horizontal"] >= 1.16
-    strong_vertical_signal = direction_scores["vertical"] >= 1.08
-    combined_signal = direction_scores["horizontal"] >= 0.98 and direction_scores["vertical"] >= 0.78
-    downward_threshold = (
-        DELTA_DOWNWARD_ANGLE_THRESHOLD
-        if baseline_applied
-        else ABS_DOWNWARD_ANGLE_THRESHOLD
-    )
-    downward_signal = (
-        vertical_measure is not None and
-        vertical_measure > 0 and
-        adjusted_vertical >= downward_threshold and
-        (pitch >= DOWNWARD_PITCH_SUPPORT_THRESHOLD or direction_scores["vertical"] >= 1.0)
-    )
+    yaw_measure = yaw_delta if baseline_applied else yaw
+    pitch_measure = pitch_delta if baseline_applied else pitch
+    yaw_score = abs(yaw_measure) / (DELTA_YAW_THRESHOLD if baseline_applied else ABS_YAW_THRESHOLD)
+    pitch_score = abs(pitch_measure) / (DELTA_PITCH_THRESHOLD if baseline_applied else ABS_PITCH_THRESHOLD)
+    combined_score = (yaw_score * 0.58) + (pitch_score * 0.42)
     looking_away = (
-        strong_horizontal_signal or
-        strong_vertical_signal or
-        combined_signal or
-        downward_signal or
-        combined_score >= 1.02
+        yaw_score >= 1.0 or
+        pitch_score >= 1.06 or
+        (yaw_score >= 0.82 and pitch_score >= 0.82) or
+        combined_score >= 0.98
     )
 
     return {
-        "face_confidence": best_confidence,
-        "face_area_ratio": round(((right - left) * (bottom - top)) / frame_area, 4),
-        "horizontal_angle": horizontal_angle,
-        "vertical_angle": vertical_angle,
-        "horizontal_angle_delta": horizontal_delta,
-        "vertical_angle_delta": vertical_delta,
-        "yaw": yaw,
-        "pitch": pitch,
-        "roll": roll,
-        "gaze_vector": [float(component) for component in gaze_vector],
+        "face_confidence": round(float(best_face["confidence"]), 4),
+        "face_area_ratio": round(float(best_face["area_ratio"]), 4),
+        "raw_pitch": round(float(raw_angles["pitch"]), 4),
+        "raw_yaw": round(float(raw_angles["yaw"]), 4),
+        "pitch": round(pitch, 4),
+        "yaw": round(yaw, 4),
+        "pitch_delta": round(float(pitch_delta), 4) if pitch_delta is not None else None,
+        "yaw_delta": round(float(yaw_delta), 4) if yaw_delta is not None else None,
         "baseline_applied": baseline_applied,
-        "adjusted_horizontal_angle": adjusted_horizontal,
-        "adjusted_vertical_angle": adjusted_vertical,
-        "gaze_score": round(max_score, 4),
-        "combined_gaze_score": round(combined_score, 4),
+        "pitch_score": round(float(pitch_score), 4),
+        "yaw_score": round(float(yaw_score), 4),
+        "gaze_score": round(float(max(yaw_score, pitch_score)), 4),
+        "combined_gaze_score": round(float(combined_score), 4),
+        "turn_axis": "lateral" if abs(yaw_measure) >= abs(pitch_measure) else "vertical",
         "looking_away": looking_away,
+        "smoothing_alpha": smoothed_angles["smoothing_alpha"],
+        "tracker_reused": smoothed_angles["tracker_reused"],
+        "tracker_reset_reason": smoothed_angles["tracker_reset_reason"],
+        "tracker_frame_gap_ms": smoothed_angles["tracker_frame_gap_ms"],
     }
 
 
 @router.post("/analyze")
-async def analyze_gaze(req: FrameRequest):
+async def analyze_gaze(request: Request):
     try:
-        frame = base64_to_frame(req.frame)
-        gaze = detect_gaze(frame, req.baseline)
+        payload, _ = await parse_request_payload(request)
+        frame = await get_frame_from_payload(payload, "frame")
+        baseline_payload = parse_json_field(payload.get("baseline"), "baseline")
+        baseline = GazeBaseline(**baseline_payload) if baseline_payload else None
+        tracker_id = payload.get("tracker_id")
+        gaze = detect_gaze(frame, baseline, tracker_id)
+
         if gaze is None:
             return {
                 "tracking_available": True,
                 "face_detected": False,
+                "face_confidence": 0,
                 "face_area_ratio": 0,
-                "horizontal_angle": 0,
-                "vertical_angle": 0,
-                "horizontal_angle_delta": None,
-                "vertical_angle_delta": None,
-                "yaw": 0,
+                "raw_pitch": 0,
+                "raw_yaw": 0,
                 "pitch": 0,
-                "roll": 0,
-                "gaze_vector": [0, 0, 0],
-                "baseline_applied": req.baseline is not None,
-                "adjusted_horizontal_angle": 0,
-                "adjusted_vertical_angle": 0,
+                "yaw": 0,
+                "pitch_delta": None,
+                "yaw_delta": None,
+                "baseline_applied": baseline is not None,
+                "pitch_score": 0,
+                "yaw_score": 0,
                 "gaze_score": 0,
                 "combined_gaze_score": 0,
+                "turn_axis": "none",
                 "looking_away": False,
+                "smoothing_alpha": 1.0,
+                "tracker_reused": False,
+                "tracker_reset_reason": "no_face",
+                "tracker_frame_gap_ms": 0,
                 "event": None,
-                "reason": "face_or_eyes_not_detected",
+                "reason": "face_not_detected_for_gaze",
             }
 
         return {
             "tracking_available": True,
             "face_detected": True,
-            "face_confidence": gaze["face_confidence"],
-            "face_area_ratio": gaze["face_area_ratio"],
-            "horizontal_angle": gaze["horizontal_angle"],
-            "vertical_angle": gaze["vertical_angle"],
-            "horizontal_angle_delta": gaze["horizontal_angle_delta"],
-            "vertical_angle_delta": gaze["vertical_angle_delta"],
-            "yaw": gaze["yaw"],
-            "pitch": gaze["pitch"],
-            "roll": gaze["roll"],
-            "gaze_vector": gaze["gaze_vector"],
-            "baseline_applied": gaze["baseline_applied"],
-            "adjusted_horizontal_angle": gaze["adjusted_horizontal_angle"],
-            "adjusted_vertical_angle": gaze["adjusted_vertical_angle"],
-            "gaze_score": gaze["gaze_score"],
-            "combined_gaze_score": gaze["combined_gaze_score"],
-            "looking_away": gaze["looking_away"],
+            **gaze,
             "event": "gaze_away" if gaze["looking_away"] else None,
         }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
         raise
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Gaze tracking unavailable: {exc}",
-        ) from exc
     except Exception as exc:
+        traceback.print_exc()
         raise HTTPException(
             status_code=503,
             detail=f"Gaze tracking unavailable: {exc}",
