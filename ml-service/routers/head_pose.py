@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 import numpy as np
-import cv2
 import sys
 import os
 import time
@@ -60,6 +59,7 @@ POSE_KEYS = (
 
 _tracker_states: dict[str, dict] = {}
 _tracker_state_lock = Lock()
+_cv2 = None
 
 
 class HeadPoseBaseline(BaseModel):
@@ -68,6 +68,17 @@ class HeadPoseBaseline(BaseModel):
     roll: float = 0.0
     nose_offset_x: float
     nose_offset_y: float
+
+
+def get_cv2():
+    global _cv2
+
+    if _cv2 is None:
+        import cv2
+
+        _cv2 = cv2
+
+    return _cv2
 
 
 def get_mediapipe_tasks():
@@ -83,6 +94,14 @@ def get_mediapipe_tasks():
         _BaseOptions = BaseOptions
 
     return _mp, _vision, _BaseOptions
+
+
+def warmup_head_pose_runtime():
+    get_cv2()
+    get_mediapipe_tasks()
+
+    if os.getenv("ML_WARM_HEAD_LANDMARKER", "1").lower() in {"1", "true", "yes"}:
+        get_face_landmarker()
 
 
 def get_face_landmarker():
@@ -141,6 +160,7 @@ def _extract_pose_from_landmark_transform(result) -> dict | None:
     if np.linalg.det(rotation_mat) < 0:
         rotation_mat[:, 2] *= -1.0
 
+    cv2 = get_cv2()
     pose_mat = cv2.hconcat([rotation_mat, np.zeros((3, 1), dtype=np.float64)])
     _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(pose_mat)
 
@@ -179,6 +199,7 @@ def _extract_pose_from_landmarks(landmarks, width: int, height: int) -> dict | N
         (landmarks[57].x * width, landmarks[57].y * height),
     ], dtype=np.float64)
 
+    cv2 = get_cv2()
     success, rotation_vec, translation_vec = cv2.solvePnP(
         model_points,
         image_points,
@@ -266,6 +287,7 @@ def _pose_motion_score(previous_pose: dict, pose: dict) -> float:
 
 def _detect_landmarks(frame: np.ndarray, tracker_id: str | None):
     mp, _, _ = get_mediapipe_tasks()
+    cv2 = get_cv2()
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
     tracker_state = _get_tracker_state(tracker_id)

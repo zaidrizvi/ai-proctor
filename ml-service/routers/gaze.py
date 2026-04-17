@@ -238,6 +238,18 @@ def get_model():
     return _model, _model_device
 
 
+def warmup_gaze_runtime():
+    torch, _, _ = get_torch_modules()
+    model, device = get_model()
+    _get_transform()
+
+    if os.getenv("ML_WARM_GAZE_FORWARD", "0").lower() not in {"1", "true", "yes"}:
+        return
+
+    with torch.no_grad():
+        model(torch.zeros((1, 3, 448, 448), dtype=torch.float32, device=device))
+
+
 def _to_uint8_rgb(face_image: np.ndarray) -> np.ndarray:
     if face_image is None or face_image.size == 0:
         raise ValueError("Face crop is empty")

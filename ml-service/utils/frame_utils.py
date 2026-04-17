@@ -1,9 +1,26 @@
 import base64
 import json
 import numpy as np
-import cv2
 from fastapi import Request
 from starlette.datastructures import UploadFile
+
+_cv2 = None
+
+
+def get_cv2():
+    global _cv2
+
+    if _cv2 is None:
+        import cv2
+
+        _cv2 = cv2
+
+    return _cv2
+
+
+def warmup_frame_runtime():
+    get_cv2()
+
 
 def base64_to_frame(base64_string: str) -> np.ndarray:
     """Convert base64 image string to OpenCV frame"""
@@ -20,6 +37,7 @@ def base64_to_frame(base64_string: str) -> np.ndarray:
         raise ValueError("Frame payload is not valid base64") from exc
 
     img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+    cv2 = get_cv2()
     frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
     if frame is None:
@@ -34,6 +52,7 @@ def bytes_to_frame(image_bytes: bytes) -> np.ndarray:
         raise ValueError("Frame payload is required")
 
     img_array = np.frombuffer(image_bytes, dtype=np.uint8)
+    cv2 = get_cv2()
     frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
     if frame is None:
@@ -95,5 +114,6 @@ def parse_json_field(value, field_name: str):
 
 def frame_to_base64(frame: np.ndarray) -> str:
     """Convert OpenCV frame to base64 string"""
+    cv2 = get_cv2()
     _, buffer = cv2.imencode(".jpg", frame)
     return base64.b64encode(buffer).decode("utf-8")

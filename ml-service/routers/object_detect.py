@@ -40,6 +40,22 @@ def get_model():
         model = get_yolo_class()(model_source)
     return model
 
+
+def warmup_object_runtime():
+    yolo = get_model()
+
+    if os.getenv("ML_WARM_OBJECT_FORWARD", "0").lower() not in {"1", "true", "yes"}:
+        return
+
+    import numpy as np
+
+    yolo(
+        np.zeros((96, 96, 3), dtype=np.uint8),
+        conf=MODEL_RETURN_CONFIDENCE,
+        imgsz=320,
+        verbose=False,
+    )
+
 MODEL_RETURN_CONFIDENCE = 0.10
 DETECTION_CONFIDENCE = 0.26
 MIN_BOX_AREA_RATIO = 0.008

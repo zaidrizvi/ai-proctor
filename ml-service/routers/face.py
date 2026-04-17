@@ -13,6 +13,7 @@ from utils.frame_utils import get_frame_from_payload, parse_json_field, parse_re
 
 router = APIRouter()
 _DeepFace = None
+_deepface_lock = Lock()
 _face_detection_cache = {}
 _face_detection_inflight = {}
 _face_detection_cache_lock = Lock()
@@ -35,6 +36,11 @@ PRESENCE_PROMOTION_SECONDARY_FACE_MIN_CONFIDENCE = 0.44
 VERIFICATION_MODEL = "Facenet512"
 DETECTION_BACKENDS = ("yunet", "opencv")
 VERIFY_DETECTOR_BACKENDS = ("yunet", "opencv")
+WARMUP_DETECTION_BACKENDS = tuple(
+    backend.strip()
+    for backend in os.getenv("ML_WARM_FACE_BACKENDS", "yunet").split(",")
+    if backend.strip()
+)
 COSINE_DISTANCE_THRESHOLD = 0.4
 MAX_COSINE_DISTANCE_THRESHOLD = 0.46
 FACE_DETECTION_CACHE_TTL_SECONDS = 1.0
@@ -45,11 +51,31 @@ def get_deepface():
     global _DeepFace
 
     if _DeepFace is None:
-        from deepface import DeepFace
+        with _deepface_lock:
+            if _DeepFace is None:
+                from deepface import DeepFace
 
-        _DeepFace = DeepFace
+                _DeepFace = DeepFace
 
     return _DeepFace
+
+
+def warmup_face_runtime():
+    get_deepface()
+
+    if os.getenv("ML_WARM_FACE_DETECTORS", "1").lower() not in {"1", "true", "yes"}:
+        return
+
+    warmup_frame = np.zeros((96, 96, 3), dtype=np.uint8)
+    for backend in WARMUP_DETECTION_BACKENDS:
+        try:
+            get_deepface().extract_faces(
+                img_path=warmup_frame,
+                detector_backend=backend,
+                enforce_detection=False,
+            )
+        except Exception as exc:
+            print(f"Face detector warmup skipped for {backend}: {exc}")
 
 
 def _face_detection_cache_key(frame, backends):

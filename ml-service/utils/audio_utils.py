@@ -307,6 +307,10 @@ def _get_vad_model():
     return load_silero_vad(onnx=False)
 
 
+def warmup_audio_runtime():
+    _get_vad_model()
+
+
 def _resample_audio(
     samples: np.ndarray,
     source_rate: int,

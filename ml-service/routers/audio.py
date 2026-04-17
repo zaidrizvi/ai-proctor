@@ -8,6 +8,12 @@ class AudioRequest(BaseModel):
     audio: str
 
 
+def warmup_audio_runtime():
+    from utils.audio_utils import warmup_audio_runtime as warmup_runtime
+
+    warmup_runtime()
+
+
 @router.post("/analyze")
 async def analyze_audio(req: AudioRequest):
     from utils.audio_utils import analyze_audio_chunk, decode_wav_base64

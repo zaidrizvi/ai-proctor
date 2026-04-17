@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 import os
+import time
 from threading import Lock, Thread
 from dotenv import load_dotenv
 
@@ -11,6 +11,9 @@ app = FastAPI(title="AIProctor ML Service", version="1.0.0")
 _routers_registered = False
 _router_registration_started = False
 _router_registration_error = ""
+_runtime_warmup_completed = False
+_runtime_warmup_error = ""
+_runtime_warmup_results = {}
 _router_registration_lock = Lock()
 
 
@@ -66,12 +69,108 @@ def start_router_registration():
     Thread(target=_target, daemon=True).start()
 
 
+def should_eager_warmup():
+    return os.getenv("ML_EAGER_WARMUP", "1").lower() in {"1", "true", "yes"}
+
+
+def get_warmup_components():
+    raw_components = os.getenv(
+        "ML_EAGER_WARMUP_COMPONENTS",
+        "frames,face,head,gaze,objects,audio",
+    )
+    components = {
+        component.strip().lower()
+        for component in raw_components.split(",")
+        if component.strip()
+    }
+
+    if "all" in components:
+        return {"frames", "face", "head", "gaze", "objects", "audio"}
+
+    return components
+
+
+def warmup_runtime():
+    global _runtime_warmup_completed, _runtime_warmup_error, _runtime_warmup_results
+
+    if not should_eager_warmup():
+        _runtime_warmup_completed = False
+        _runtime_warmup_error = ""
+        _runtime_warmup_results = {}
+        return
+
+    started_at = time.perf_counter()
+    components = get_warmup_components()
+    warmups = []
+
+    if "frames" in components:
+        from utils.frame_utils import warmup_frame_runtime
+
+        warmups.append(("frames", warmup_frame_runtime))
+
+    if "face" in components:
+        from routers.face import warmup_face_runtime
+
+        warmups.append(("face", warmup_face_runtime))
+
+    if "head" in components:
+        from routers.head_pose import warmup_head_pose_runtime
+
+        warmups.append(("head", warmup_head_pose_runtime))
+
+    if "gaze" in components:
+        from routers.gaze import warmup_gaze_runtime
+
+        warmups.append(("gaze", warmup_gaze_runtime))
+
+    if "objects" in components:
+        from routers.object_detect import warmup_object_runtime
+
+        warmups.append(("objects", warmup_object_runtime))
+
+    if "audio" in components:
+        from routers.audio import warmup_audio_runtime
+
+        warmups.append(("audio", warmup_audio_runtime))
+
+    results = {}
+    errors = {}
+
+    for name, warmup in warmups:
+        component_started_at = time.perf_counter()
+        try:
+            warmup()
+            results[name] = {
+                "ok": True,
+                "durationSeconds": round(time.perf_counter() - component_started_at, 2),
+                "error": None,
+            }
+        except Exception as exc:
+            results[name] = {
+                "ok": False,
+                "durationSeconds": round(time.perf_counter() - component_started_at, 2),
+                "error": str(exc),
+            }
+            errors[name] = str(exc)
+            print(f"ML runtime warmup failed for {name}: {exc}")
+
+    _runtime_warmup_results = results
+    _runtime_warmup_completed = not errors
+    _runtime_warmup_error = "; ".join(
+        f"{name}: {message}" for name, message in errors.items()
+    )
+    print(f"ML runtime warmup finished in {time.perf_counter() - started_at:.2f}s")
+
+
 @app.get("/")
 def root():
     return {
         "message": "AIProctor ML Service running",
         "routersRegistered": _routers_registered,
         "routerRegistrationError": _router_registration_error or None,
+        "runtimeWarmupCompleted": _runtime_warmup_completed,
+        "runtimeWarmupError": _runtime_warmup_error or None,
+        "runtimeWarmupResults": _runtime_warmup_results,
     }
 
 
@@ -81,15 +180,24 @@ def health():
         "status": "ok",
         "routersRegistered": _routers_registered,
         "routerRegistrationError": _router_registration_error or None,
+        "runtimeWarmupCompleted": _runtime_warmup_completed,
+        "runtimeWarmupError": _runtime_warmup_error or None,
+        "runtimeWarmupResults": _runtime_warmup_results,
     }
 
 
 @app.on_event("startup")
 async def on_startup():
-    start_router_registration()
+    global _router_registration_started
+
+    _router_registration_started = True
+    register_ml_routers()
+    warmup_runtime()
 
 
 if __name__ == "__main__":
+    import uvicorn
+
     port = int(os.getenv("PORT", 8000))
     reload_enabled = os.getenv("UVICORN_RELOAD", "").lower() in {"1", "true", "yes"}
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=reload_enabled)
