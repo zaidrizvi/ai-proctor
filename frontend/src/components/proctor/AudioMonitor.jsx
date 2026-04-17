@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { postMlJson } from "../../utils/mlClient.js";
 
-const ANALYSIS_INTERVAL_MS = 650;
+const ANALYSIS_INTERVAL_MS = 1000;
 const MAX_ANALYSIS_WINDOW_MS = 950;
 const MAX_BUFFERED_AUDIO_MS = 1400;
 const ALERT_COOLDOWN_MS = 1200;

@@ -2,14 +2,20 @@ from fastapi import APIRouter, HTTPException, Request
 import sys
 import os
 import traceback
+import time
+import hashlib
 from typing import List, Optional
 import numpy as np
+from threading import Event, Lock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.frame_utils import get_frame_from_payload, parse_json_field, parse_request_payload
 
 router = APIRouter()
 _DeepFace = None
+_face_detection_cache = {}
+_face_detection_inflight = {}
+_face_detection_cache_lock = Lock()
 
 FACE_CONFIDENCE_THRESHOLD = 0.5
 FACE_PRESENCE_CONFIDENCE_THRESHOLD = 0.38
@@ -31,6 +37,8 @@ DETECTION_BACKENDS = ("yunet", "opencv")
 VERIFY_DETECTOR_BACKENDS = ("yunet", "opencv")
 COSINE_DISTANCE_THRESHOLD = 0.4
 MAX_COSINE_DISTANCE_THRESHOLD = 0.46
+FACE_DETECTION_CACHE_TTL_SECONDS = 1.0
+FACE_DETECTION_CACHE_MAX_ENTRIES = 24
 
 
 def get_deepface():
@@ -44,47 +52,127 @@ def get_deepface():
     return _DeepFace
 
 
+def _face_detection_cache_key(frame, backends):
+    sampled = np.ascontiguousarray(frame[::16, ::16])
+    digest = hashlib.blake2b(sampled.tobytes(), digest_size=16).hexdigest()
+    return (
+        digest,
+        tuple(backends),
+        tuple(int(value) for value in frame.shape[:2]),
+    )
+
+
+def _prune_face_detection_cache(now: float):
+    expired_keys = [
+        key
+        for key, entry in _face_detection_cache.items()
+        if now - entry["created_at"] > FACE_DETECTION_CACHE_TTL_SECONDS
+    ]
+    for key in expired_keys:
+        _face_detection_cache.pop(key, None)
+
+    if len(_face_detection_cache) <= FACE_DETECTION_CACHE_MAX_ENTRIES:
+        return
+
+    overflow = len(_face_detection_cache) - FACE_DETECTION_CACHE_MAX_ENTRIES
+    for key, _ in sorted(
+        _face_detection_cache.items(),
+        key=lambda item: item[1]["created_at"],
+    )[:overflow]:
+        _face_detection_cache.pop(key, None)
+
+
+def _get_raw_face_detections(frame, backends):
+    cache_key = _face_detection_cache_key(frame, backends)
+    should_compute = False
+    waiter = None
+    now = time.monotonic()
+
+    with _face_detection_cache_lock:
+        _prune_face_detection_cache(now)
+        cached = _face_detection_cache.get(cache_key)
+        if cached is not None:
+            return cached["detections_by_backend"], cached["backend_errors"]
+
+        waiter = _face_detection_inflight.get(cache_key)
+        if waiter is None:
+            waiter = Event()
+            _face_detection_inflight[cache_key] = waiter
+            should_compute = True
+
+    if not should_compute:
+        waiter.wait(timeout=1.5)
+        with _face_detection_cache_lock:
+            cached = _face_detection_cache.get(cache_key)
+            if cached is not None:
+                return cached["detections_by_backend"], cached["backend_errors"]
+
+    detections_by_backend = {}
+    backend_errors = {}
+
+    for backend in backends:
+        try:
+            detections_by_backend[backend] = get_deepface().extract_faces(
+                img_path=frame,
+                detector_backend=backend,
+                enforce_detection=False,
+            ) or []
+        except Exception as exc:
+            backend_errors[backend] = str(exc)
+
+    with _face_detection_cache_lock:
+        inflight = _face_detection_inflight.pop(cache_key, None)
+        _face_detection_cache[cache_key] = {
+            "detections_by_backend": detections_by_backend,
+            "backend_errors": backend_errors,
+            "created_at": time.monotonic(),
+        }
+
+        if inflight is not None:
+            inflight.set()
+
+    return detections_by_backend, backend_errors
+
+
 def extract_confident_faces(frame, backends=DETECTION_BACKENDS, min_confidence=FACE_CONFIDENCE_THRESHOLD):
+    detections_by_backend, backend_errors = _get_raw_face_detections(frame, backends)
     best_faces = []
     best_backend = None
     best_score = -1.0
-    backend_errors = []
     frame_h, frame_w = frame.shape[:2]
     frame_area = max(float(frame_h * frame_w), 1.0)
 
     for backend in backends:
-        try:
-            faces = get_deepface().extract_faces(
-                img_path=frame,
-                detector_backend=backend,
-                enforce_detection=False,
-            )
-            confident = [
-                face for face in faces if face.get("confidence", 0) >= min_confidence
-            ]
-            confident.sort(
-                key=lambda face: (
-                    float(face.get("confidence", 0.0)),
-                    _face_area_ratio(face.get("facial_area"), frame_area),
-                ),
-                reverse=True,
-            )
+        if backend in backend_errors:
+            continue
 
-            top_confidence = float(confident[0].get("confidence", 0.0)) if confident else 0.0
-            top_area_ratio = _face_area_ratio(
-                confident[0].get("facial_area"), frame_area
-            ) if confident else 0.0
-            backend_score = (len(confident) * 10.0) + (top_confidence * 3.0) + top_area_ratio
+        faces = detections_by_backend.get(backend, [])
+        confident = [
+            face for face in faces if face.get("confidence", 0) >= min_confidence
+        ]
+        confident.sort(
+            key=lambda face: (
+                float(face.get("confidence", 0.0)),
+                _face_area_ratio(face.get("facial_area"), frame_area),
+            ),
+            reverse=True,
+        )
 
-            if backend_score > best_score:
-                best_faces = confident
-                best_backend = backend
-                best_score = backend_score
-        except Exception as exc:
-            backend_errors.append(f"{backend}: {exc}")
+        top_confidence = float(confident[0].get("confidence", 0.0)) if confident else 0.0
+        top_area_ratio = _face_area_ratio(
+            confident[0].get("facial_area"), frame_area
+        ) if confident else 0.0
+        backend_score = (len(confident) * 10.0) + (top_confidence * 3.0) + top_area_ratio
+
+        if backend_score > best_score:
+            best_faces = confident
+            best_backend = backend
+            best_score = backend_score
 
     if not best_faces and len(backend_errors) == len(backends):
-        raise RuntimeError("; ".join(backend_errors))
+        raise RuntimeError("; ".join(
+            f"{backend}: {message}" for backend, message in backend_errors.items()
+        ))
 
     return best_faces, best_backend
 

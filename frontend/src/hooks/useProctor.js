@@ -21,10 +21,12 @@ const GAZE_AWAY_ALERT_COOLDOWN_MS = 2200;
 const OBJECT_DETECTED_STREAK_TO_ALERT = 2;
 const PRIORITY_OBJECT_DETECTED_STREAK_TO_ALERT = 1;
 const OBJECT_ALERT_COOLDOWN_MS = 2000;
-const OBJECT_ANALYSIS_INTERVAL_MS = 800;
+const HEAD_ANALYSIS_INTERVAL_MS = 1500;
+const GAZE_ANALYSIS_INTERVAL_MS = 2500;
+const OBJECT_ANALYSIS_INTERVAL_MS = 4000;
 const MULTIPLE_FACES_ALERT_COOLDOWN_MS = 2000;
 const MULTIPLE_FACES_FACE_SOURCE_HOLD_MS = 1400;
-const MULTIPLE_FACES_OBJECT_SOURCE_HOLD_MS = (OBJECT_ANALYSIS_INTERVAL_MS * 2) + 250;
+const MULTIPLE_FACES_OBJECT_SOURCE_HOLD_MS = OBJECT_ANALYSIS_INTERVAL_MS + 1000;
 const MULTIPLE_FACES_FACE_PULSE_INTERVAL_MS = 700;
 const MULTIPLE_FACES_OBJECT_PULSE_INTERVAL_MS = 850;
 const MULTIPLE_FACES_STALE_DECAY_MS = 2000;
@@ -44,7 +46,7 @@ const MIN_DOWNWARD_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.16;
 const DOWNWARD_HEAD_TURN_GRACE_MS = 900;
 const MIN_DOWNWARD_HEAD_GRACE_SIGNAL_SCORE = 0.92;
 const IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS = 1000;
-const IDENTITY_URGENT_VERIFY_INTERVAL_MS = 600;
+const IDENTITY_URGENT_VERIFY_INTERVAL_MS = 1500;
 const IDENTITY_MATCH_FRESHNESS_MS = 4500;
 const IDENTITY_COMPROMISE_WINDOW_MS = 2200;
 const DETECTOR_NO_FACE_IDENTITY_GRACE_MS = 450;
@@ -91,7 +93,7 @@ const useProctor = ({
   objectDetectionEnabled = true,
   onAlert,
   onMlFrame,
-  intervalMs = 700,
+  intervalMs = 800,
   verifyIntervalMs = 30000,
 }) => {
   const intervalRef = useRef(null);
@@ -101,6 +103,8 @@ const useProctor = ({
   const verifyAnalysisInFlightRef = useRef(false);
   const captureCanvasRef = useRef(null);
   const lastIdentityCheckRef = useRef(0);
+  const lastHeadCheckAtRef = useRef(0);
+  const lastGazeCheckAtRef = useRef(0);
   const lastObjectCheckAtRef = useRef(0);
   const lastExplicitFaceDetectedAtRef = useRef(0);
   const lastExplicitNoFaceAtRef = useRef(0);
@@ -1071,6 +1075,23 @@ const useProctor = ({
       activeFlagsRef.current.cameraFrameUnavailable = false;
       onMlFrame?.(frame);
       analysisCycleRef.current += 1;
+      const now = Date.now();
+      const shouldRunHeadAnalysis = (
+        headMovementEnabled &&
+        now - lastHeadCheckAtRef.current >= HEAD_ANALYSIS_INTERVAL_MS
+      );
+      const shouldRunGazeAnalysis = (
+        gazeTrackingEnabled &&
+        now - lastGazeCheckAtRef.current >= GAZE_ANALYSIS_INTERVAL_MS
+      );
+
+      if (shouldRunHeadAnalysis) {
+        lastHeadCheckAtRef.current = now;
+      }
+
+      if (shouldRunGazeAnalysis) {
+        lastGazeCheckAtRef.current = now;
+      }
 
       const criticalRequests = [
         ...(faceDetectionEnabled
@@ -1083,7 +1104,7 @@ const useProctor = ({
               }),
             }]
           : []),
-        ...(headMovementEnabled
+        ...(shouldRunHeadAnalysis
           ? [{
               key: "head",
               promise: postMlMultipart("/head/analyze", {
@@ -1097,7 +1118,7 @@ const useProctor = ({
               }),
             }]
           : []),
-        ...(gazeTrackingEnabled
+        ...(shouldRunGazeAnalysis
           ? [{
               key: "gaze",
               promise: postMlMultipart("/gaze/analyze", {
@@ -1137,8 +1158,6 @@ const useProctor = ({
       const criticalCompletedCount = [faceRes, headRes, gazeRes].filter(
         (result) => result?.status === "fulfilled"
       ).length;
-      const now = Date.now();
-
       if (criticalRequests.length > 0 && criticalCompletedCount === 0) {
         console.warn("ML analysis failed: no vision checks completed");
         if (now - lastAlertAtRef.current.mlUnavailable >= 30000) {
@@ -1155,8 +1174,18 @@ const useProctor = ({
 
       countersRef.current.total_checks += 1;
       refreshMultipleFacesState(now);
-      const trackerPresence = deriveTrackerFacePresence(headRes);
-      refreshRecentHeadPoseState(headRes, now);
+      const trackerPresence = shouldRunHeadAnalysis
+        ? deriveTrackerFacePresence(headRes)
+        : {
+            facePresent: false,
+            stable: false,
+            weak: false,
+          };
+
+      if (shouldRunHeadAnalysis) {
+        refreshRecentHeadPoseState(headRes, now);
+      }
+
       const faceState = faceDetectionEnabled
         ? processFaceResult(faceRes, now, trackerPresence, token)
         : {
@@ -1172,8 +1201,14 @@ const useProctor = ({
             faceAreaRatio: 0,
             multipleFaces: false,
           };
-      processHeadResult(headRes, now, faceState, token);
-      processGazeResult(gazeRes, now, faceState, token);
+      if (shouldRunHeadAnalysis || !headMovementEnabled) {
+        processHeadResult(headRes, now, faceState, token);
+      }
+
+      if (shouldRunGazeAnalysis || !gazeTrackingEnabled) {
+        processGazeResult(gazeRes, now, faceState, token);
+      }
+
       scheduleBackgroundTasks(frame, token, faceState, trackerPresence);
     } catch (err) {
       if (isTokenActive(token)) {
@@ -1248,6 +1283,8 @@ const useProctor = ({
       verifyAnalysisInFlightRef.current = false;
       lastObjectCheckAtRef.current = 0;
       lastIdentityCheckRef.current = 0;
+      lastHeadCheckAtRef.current = 0;
+      lastGazeCheckAtRef.current = 0;
       lastExplicitFaceDetectedAtRef.current = 0;
       lastExplicitNoFaceAtRef.current = 0;
       lastValidHeadPoseAtRef.current = 0;
