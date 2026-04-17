@@ -27,25 +27,43 @@ const getModelList = () => {
     .filter(Boolean);
 };
 
-const buildPrompt = (subject, topic, count) => `Generate ${count} multiple choice questions for the subject "${subject}" on the topic "${topic}".
+const buildPrompt = (subject, topic, count) => `You are an expert exam paper setter and subject-matter teacher.
 
-Return ONLY a valid JSON array, no markdown, no explanation, no backticks. Just raw JSON.
+Create exactly ${count} high-quality multiple choice questions for:
+- Subject: "${subject}"
+- Topic: "${topic}"
 
-Format:
+Return ONLY a valid JSON array. Do not include markdown, comments, code fences, headings, or any text outside the JSON.
+
+Required JSON schema:
 [
   {
-    "question": "Question text here?",
+    "question": "A clear, exam-ready question stem?",
     "options": ["Option A", "Option B", "Option C", "Option D"],
     "correctAnswer": 0,
-    "explanation": "Brief explanation why this is correct"
+    "explanation": "A concise explanation of why the correct option is correct."
   }
 ]
 
-Rules:
-- correctAnswer is the index (0-3) of the correct option
-- All 4 options must be plausible
-- Questions should be clear and unambiguous
-- Difficulty should be mixed (easy, medium, hard)`;
+Quality requirements:
+- Generate exactly ${count} questions. Do not generate fewer or more.
+- Each question must test meaningful understanding of "${topic}", not trivia or vague definitions.
+- Cover a balanced mix of concepts, applications, comparisons, and common misconceptions.
+- Use mixed difficulty: about 30% easy, 50% medium, and 20% hard.
+- Write self-contained question stems. A student should not need outside context beyond the subject and topic.
+- Make every option plausible to a student who has partially studied the topic.
+- Make the wrong options believable, but clearly incorrect for one specific reason.
+- Avoid trick questions, ambiguous wording, opinion-based questions, and questions with multiple valid answers.
+- Avoid repeated question patterns. Do not ask the same concept in different wording.
+- Avoid giveaway phrases such as "always", "never", "all of the above", "none of the above", or obviously longer correct answers.
+- Keep options similar in length, grammar, and style.
+- Randomize the correct answer position across questions.
+- correctAnswer must be the zero-based index (0, 1, 2, or 3) of the correct option.
+- Explanations must be short, accurate, and useful for review.
+- Use professional academic language appropriate for an online exam.
+- Do not mention difficulty labels in the question, options, or explanation.
+- Do not include answer letters like "A.", "B.", "C.", or "D." inside the options.
+- Ensure the JSON is parseable by JSON.parse with double-quoted strings and no trailing commas.`;
 
 const parseProviderError = (err) => {
   const rawMessage = String(err?.message || err || "");
