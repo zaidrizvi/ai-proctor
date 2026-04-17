@@ -41,6 +41,7 @@ WARMUP_DETECTION_BACKENDS = tuple(
     for backend in os.getenv("ML_WARM_FACE_BACKENDS", "yunet").split(",")
     if backend.strip()
 )
+FACE_FALLBACK_ON_EMPTY = os.getenv("FACE_FALLBACK_ON_EMPTY", "0").lower() in {"1", "true", "yes"}
 COSINE_DISTANCE_THRESHOLD = 0.4
 MAX_COSINE_DISTANCE_THRESHOLD = 0.46
 FACE_DETECTION_CACHE_TTL_SECONDS = 1.0
@@ -145,6 +146,10 @@ def _get_raw_face_detections(frame, backends):
             ) or []
         except Exception as exc:
             backend_errors[backend] = str(exc)
+            continue
+
+        if detections_by_backend[backend] or not FACE_FALLBACK_ON_EMPTY:
+            break
 
     with _face_detection_cache_lock:
         inflight = _face_detection_inflight.pop(cache_key, None)
