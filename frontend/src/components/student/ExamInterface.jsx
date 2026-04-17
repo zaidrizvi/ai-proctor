@@ -54,16 +54,16 @@ const SHOW_STUDENT_ML_PREVIEW = true;
 const LIVE_ALERT_LIMIT = 4;
 const BASELINE_MIN_POSE_QUALITY = 0.46;
 const BASELINE_RETRY_DELAY_MS = 2000;
-const BASELINE_CAPTURE_ATTEMPTS = 20;
-const BASELINE_CAPTURE_PAUSE_MS = 320;
-const BASELINE_TARGET_HEAD_SAMPLES = 5;
-const BASELINE_MIN_HEAD_SAMPLES = 4;
-const BASELINE_TARGET_GAZE_SAMPLES = 5;
-const BASELINE_MIN_GAZE_SAMPLES = 4;
-const BASELINE_MAX_MOVEMENT_SCORE = 1.05;
-const BASELINE_MAX_COMBINED_MOVEMENT_SCORE = 1.12;
-const BASELINE_MAX_GAZE_SCORE = 0.9;
-const BASELINE_MAX_COMBINED_GAZE_SCORE = 0.96;
+const BASELINE_CAPTURE_ATTEMPTS = 12;
+const BASELINE_CAPTURE_PAUSE_MS = 180;
+const BASELINE_TARGET_HEAD_SAMPLES = 3;
+const BASELINE_MIN_HEAD_SAMPLES = 3;
+const BASELINE_TARGET_GAZE_SAMPLES = 3;
+const BASELINE_MIN_GAZE_SAMPLES = 3;
+const BASELINE_MAX_MOVEMENT_SCORE = 1.24;
+const BASELINE_MAX_COMBINED_MOVEMENT_SCORE = 1.28;
+const BASELINE_MAX_GAZE_SCORE = 1.06;
+const BASELINE_MAX_COMBINED_GAZE_SCORE = 1.1;
 const BASELINE_MIN_GAZE_FACE_CONFIDENCE = 0.5;
 const BASELINE_MIN_GAZE_FACE_AREA_RATIO = 0.024;
 const BASELINE_MAX_HEAD_DELTA = {
@@ -1095,8 +1095,8 @@ const ExamInterface = () => {
               tracker_id: session?._id || examId || "baseline-calibration",
             }, {
               label: "exam.head.baseline",
-              retries: 1,
-              timeoutMs: 16000,
+              retries: 0,
+              timeoutMs: 10000,
               warmup: true,
             }),
           ] : []),
@@ -1106,8 +1106,8 @@ const ExamInterface = () => {
               tracker_id: session?._id || examId || "baseline-calibration",
             }, {
               label: "exam.gaze.baseline",
-              retries: 1,
-              timeoutMs: 16000,
+              retries: 0,
+              timeoutMs: 10000,
               warmup: true,
             }),
           ] : []),
@@ -1128,7 +1128,7 @@ const ExamInterface = () => {
             !(
               headData.downward_signal &&
               (headData.turn_axis || "none") === "downward" &&
-              Number(headData.combined_movement_score || 0) >= 0.9
+              Number(headData.combined_movement_score || 0) >= 1.08
             )
           ) {
             const headSample = {
