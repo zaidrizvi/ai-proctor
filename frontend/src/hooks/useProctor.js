@@ -803,18 +803,21 @@ const useProctor = ({
     const verification = response.data;
     identityStateRef.current.lastCheckAt = now;
     identityStateRef.current.reason = verification.reason || "";
+    const presenceMultipleFacesPendingConfirmation = Boolean(
+      verification.identity_compromised !== true &&
+      verification.multiple_faces_strict !== true &&
+      (
+        verification.reason === "presence_multiple_faces_pending_confirmation" ||
+        verification.multiple_faces_presence_promoted === true
+      )
+    );
     const identityCompromised = Boolean(
       verification.identity_compromised ||
       verification.multiple_faces_strict === true ||
       verification.reason === "multiple_current_faces" ||
-      verification.multiple_faces
-    );
-    const presenceMultipleFacesPendingConfirmation = Boolean(
-      verification.reason === "presence_multiple_faces_pending_confirmation" ||
       (
-        verification.multiple_faces_presence_promoted === true &&
-        verification.identity_compromised !== true &&
-        verification.multiple_faces !== true
+        verification.multiple_faces &&
+        !presenceMultipleFacesPendingConfirmation
       )
     );
     const mismatchDetected =

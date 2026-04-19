@@ -427,6 +427,10 @@ def _normalize_angle(angle: float) -> float:
     return normalized
 
 
+def _angle_delta(current: float, baseline: float) -> float:
+    return _normalize_angle(current - baseline)
+
+
 def _estimate_pose_quality(
     pitch: float,
     yaw: float,
@@ -455,9 +459,18 @@ def build_pose_deltas(pose: dict, baseline: HeadPoseBaseline | None):
         }
 
     return {
-        "pitch_delta": _apply_delta_deadzone(pose["pitch"] - baseline.pitch, DELTA_PITCH_DEADZONE),
-        "yaw_delta": _apply_delta_deadzone(pose["yaw"] - baseline.yaw, DELTA_YAW_DEADZONE),
-        "roll_delta": _apply_delta_deadzone(pose["roll"] - baseline.roll, DELTA_ROLL_DEADZONE),
+        "pitch_delta": _apply_delta_deadzone(
+            _angle_delta(pose["pitch"], baseline.pitch),
+            DELTA_PITCH_DEADZONE,
+        ),
+        "yaw_delta": _apply_delta_deadzone(
+            _angle_delta(pose["yaw"], baseline.yaw),
+            DELTA_YAW_DEADZONE,
+        ),
+        "roll_delta": _apply_delta_deadzone(
+            _angle_delta(pose["roll"], baseline.roll),
+            DELTA_ROLL_DEADZONE,
+        ),
         "nose_offset_x_delta": _apply_delta_deadzone(
             pose["nose_offset_x"] - baseline.nose_offset_x,
             DELTA_NOSE_DEADZONE,
