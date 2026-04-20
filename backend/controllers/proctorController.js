@@ -64,9 +64,12 @@ export const logEvent = async (req, res) => {
     if (io) {
       io.to(`exam-${examId}`).emit("receive-alert", {
         examId,
-        userId: req.user._id,
+        sessionId: sessionId.toString(),
+        userId: req.user._id.toString(),
         studentName: req.user.name,
         event: {
+          _id: event._id.toString(),
+          sessionId: sessionId.toString(),
           eventType,
           severity,
           description,
@@ -76,9 +79,16 @@ export const logEvent = async (req, res) => {
 
       io.to(`exam-${examId}`).emit("receive-suspicion", {
         examId,
-        userId: req.user._id,
+        sessionId: sessionId.toString(),
+        userId: req.user._id.toString(),
         studentName: req.user.name,
         score: summary.suspicionScore,
+        summary: {
+          flaggedEventsCount: summary.flaggedEventsCount,
+          tabSwitchCount: summary.tabSwitchCount,
+          faceNotDetectedCount: summary.faceNotDetectedCount,
+          suspicionScore: summary.suspicionScore,
+        },
         breakdown: summary.eventCounts,
       });
     }
@@ -185,7 +195,8 @@ export const terminateSession = async (req, res) => {
     if (io) {
       io.to(`exam-${session.exam}`).emit("session-terminated", {
         examId: session.exam.toString(),
-        userId: session.student._id,
+        sessionId: session._id.toString(),
+        userId: session.student._id.toString(),
         message: "Your exam session has been terminated by the invigilator.",
       });
     }

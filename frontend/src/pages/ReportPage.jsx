@@ -15,6 +15,7 @@ import {
 import Navbar from "../components/shared/Navbar.jsx";
 import StatusBadge from "../components/shared/StatusBadge.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useSocket } from "../context/SocketContext.jsx";
 import api from "../utils/api.js";
 
 void motion;
@@ -37,6 +38,19 @@ const eventLabel = (type) => ({
   ml_service_unavailable: "ML Unavailable",
   camera_frame_unavailable: "Camera Frame Unavailable",
 }[type] || type);
+
+const getEventKey = (event) => {
+  if (event?._id) {
+    return `id:${String(event._id)}`;
+  }
+
+  return [
+    event?.eventType || "",
+    event?.severity || "",
+    event?.description || "",
+    event?.timestamp || "",
+  ].join("|");
+};
 
 const getSessionOutcome = (session) => {
   if (session.status === "ongoing") {
@@ -78,6 +92,7 @@ const ReportPage = () => {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { socket, joinExamRoom, leaveExamRoom } = useSocket();
   const isAdmin = user?.role === "admin";
   const fallbackReportRoute = isAdmin ? "/admin/live" : "/student/results";
 
@@ -85,6 +100,12 @@ const ReportPage = () => {
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
+  const reportSessionId = data?.session?._id ? String(data.session._id) : "";
+  const reportExamId = data?.session?.exam?._id ? String(data.session.exam._id) : "";
+  const reportStudentId = data?.session?.student?._id ? String(data.session.student._id) : "";
+  const reportBackRoute = isAdmin && reportExamId
+    ? `/admin/live?examId=${encodeURIComponent(reportExamId)}`
+    : fallbackReportRoute;
 
   useEffect(() => {
     const fetchReport = async () => {
@@ -100,6 +121,132 @@ const ReportPage = () => {
 
     fetchReport();
   }, [fallbackReportRoute, navigate, sessionId]);
+
+  useEffect(() => {
+    if (!isAdmin || !socket || !reportExamId) {
+      return undefined;
+    }
+
+    joinExamRoom(reportExamId);
+
+    return () => {
+      leaveExamRoom(reportExamId);
+    };
+  }, [isAdmin, joinExamRoom, leaveExamRoom, reportExamId, socket]);
+
+  useEffect(() => {
+    if (!isAdmin || !socket || !reportSessionId) {
+      return undefined;
+    }
+
+    const isCurrentReportEvent = ({ examId: eventExamId, sessionId: eventSessionId, userId }) => {
+      if (reportExamId && String(eventExamId || "") !== reportExamId) {
+        return false;
+      }
+
+      if (eventSessionId) {
+        return String(eventSessionId) === reportSessionId;
+      }
+
+      return Boolean(reportStudentId) && String(userId || "") === reportStudentId;
+    };
+
+    const handleReceiveAlert = (payload = {}) => {
+      if (!isCurrentReportEvent(payload) || !payload.event) {
+        return;
+      }
+
+      const nextEvent = {
+        ...payload.event,
+        sessionId: payload.event.sessionId || payload.sessionId || reportSessionId,
+        student: payload.userId || reportStudentId,
+        timestamp: payload.event.timestamp || new Date().toISOString(),
+      };
+      const nextEventKey = getEventKey(nextEvent);
+
+      setData((prev) => {
+        if (!prev) {
+          return prev;
+        }
+
+        const currentEvents = Array.isArray(prev.events) ? prev.events : [];
+        if (currentEvents.some((event) => getEventKey(event) === nextEventKey)) {
+          return prev;
+        }
+
+        const nextEvents = [...currentEvents, nextEvent].sort(
+          (first, second) => new Date(first.timestamp) - new Date(second.timestamp)
+        );
+
+        return {
+          ...prev,
+          events: nextEvents,
+          session: {
+            ...prev.session,
+            flaggedEventsCount: Number(prev.session?.flaggedEventsCount || currentEvents.length) + 1,
+            tabSwitchCount: nextEvent.eventType === "tab_switch"
+              ? Number(prev.session?.tabSwitchCount || 0) + 1
+              : prev.session?.tabSwitchCount,
+            faceNotDetectedCount: nextEvent.eventType === "face_not_detected"
+              ? Number(prev.session?.faceNotDetectedCount || 0) + 1
+              : prev.session?.faceNotDetectedCount,
+          },
+        };
+      });
+    };
+
+    const handleReceiveSuspicion = (payload = {}) => {
+      if (!isCurrentReportEvent(payload)) {
+        return;
+      }
+
+      setData((prev) => {
+        if (!prev) {
+          return prev;
+        }
+
+        const summary = payload.summary || {};
+
+        return {
+          ...prev,
+          session: {
+            ...prev.session,
+            suspicionScore: Number(summary.suspicionScore ?? payload.score ?? prev.session?.suspicionScore ?? 0),
+            flaggedEventsCount: summary.flaggedEventsCount ?? prev.session?.flaggedEventsCount,
+            tabSwitchCount: summary.tabSwitchCount ?? prev.session?.tabSwitchCount,
+            faceNotDetectedCount: summary.faceNotDetectedCount ?? prev.session?.faceNotDetectedCount,
+          },
+        };
+      });
+    };
+
+    const handleSessionTerminated = (payload = {}) => {
+      if (!isCurrentReportEvent(payload)) {
+        return;
+      }
+
+      setData((prev) => prev
+        ? {
+            ...prev,
+            session: {
+              ...prev.session,
+              status: "terminated",
+              submittedAt: prev.session?.submittedAt || new Date().toISOString(),
+            },
+          }
+        : prev);
+    };
+
+    socket.on("receive-alert", handleReceiveAlert);
+    socket.on("receive-suspicion", handleReceiveSuspicion);
+    socket.on("session-terminated", handleSessionTerminated);
+
+    return () => {
+      socket.off("receive-alert", handleReceiveAlert);
+      socket.off("receive-suspicion", handleReceiveSuspicion);
+      socket.off("session-terminated", handleSessionTerminated);
+    };
+  }, [isAdmin, reportExamId, reportSessionId, reportStudentId, socket]);
 
   const handleDownloadPDF = async () => {
     setDownloading(true);
@@ -157,7 +304,7 @@ const ReportPage = () => {
             <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => navigate(fallbackReportRoute)}
+                  onClick={() => navigate(reportBackRoute)}
                   className="rounded-2xl p-2"
                   style={{ background: "var(--panel-soft)", color: "var(--app-muted)" }}
                 >

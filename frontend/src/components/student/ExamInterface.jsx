@@ -52,33 +52,33 @@ const EVENT_LOG_COOLDOWNS_MS = {
 const SHOW_STUDENT_DEBUG_UI = false;
 const SHOW_STUDENT_ML_PREVIEW = true;
 const LIVE_ALERT_LIMIT = 4;
-const BASELINE_MIN_POSE_QUALITY = 0.46;
+const BASELINE_MIN_POSE_QUALITY = 0.42;
 const BASELINE_RETRY_DELAY_MS = 2000;
-const BASELINE_CAPTURE_ATTEMPTS = 12;
-const BASELINE_CAPTURE_PAUSE_MS = 180;
-const BASELINE_TARGET_HEAD_SAMPLES = 3;
-const BASELINE_MIN_HEAD_SAMPLES = 3;
-const BASELINE_TARGET_GAZE_SAMPLES = 3;
-const BASELINE_MIN_GAZE_SAMPLES = 3;
-const BASELINE_MAX_MOVEMENT_SCORE = 1.24;
-const BASELINE_MAX_COMBINED_MOVEMENT_SCORE = 1.28;
-const BASELINE_MAX_GAZE_SCORE = 1.06;
-const BASELINE_MAX_COMBINED_GAZE_SCORE = 1.1;
+const BASELINE_CAPTURE_ATTEMPTS = 8;
+const BASELINE_CAPTURE_PAUSE_MS = 120;
+const BASELINE_TARGET_HEAD_SAMPLES = 2;
+const BASELINE_MIN_HEAD_SAMPLES = 2;
+const BASELINE_TARGET_GAZE_SAMPLES = 2;
+const BASELINE_MIN_GAZE_SAMPLES = 2;
+const BASELINE_MAX_MOVEMENT_SCORE = 1.36;
+const BASELINE_MAX_COMBINED_MOVEMENT_SCORE = 1.38;
+const BASELINE_MAX_GAZE_SCORE = 1.18;
+const BASELINE_MAX_COMBINED_GAZE_SCORE = 1.2;
 const BASELINE_MIN_GAZE_FACE_CONFIDENCE = 0.5;
-const BASELINE_MIN_GAZE_FACE_AREA_RATIO = 0.024;
+const BASELINE_MIN_GAZE_FACE_AREA_RATIO = 0.02;
 const BASELINE_MAX_HEAD_DELTA = {
-  pitch: 9.5,
-  yaw: 9,
-  roll: 8.5,
-  nose_offset_x: 0.065,
-  nose_offset_y: 0.06,
+  pitch: 12,
+  yaw: 12,
+  roll: 11,
+  nose_offset_x: 0.08,
+  nose_offset_y: 0.075,
 };
 const BASELINE_MAX_HEAD_SPREAD = {
-  pitch: 8,
-  yaw: 7,
-  roll: 7.5,
-  nose_offset_x: 0.05,
-  nose_offset_y: 0.048,
+  pitch: 10,
+  yaw: 10,
+  roll: 9.5,
+  nose_offset_x: 0.065,
+  nose_offset_y: 0.06,
 };
 const HEAD_BASELINE_SAMPLE_KEYS = [
   "pitch",
@@ -88,13 +88,14 @@ const HEAD_BASELINE_SAMPLE_KEYS = [
   "nose_offset_y",
 ];
 const GAZE_BASELINE_SAMPLE_KEYS = ["pitch", "yaw"];
+const ANGLE_BASELINE_SAMPLE_KEYS = new Set(["pitch", "yaw", "roll"]);
 const BASELINE_MAX_GAZE_DELTA = {
-  pitch: 8.5,
-  yaw: 9,
+  pitch: 11,
+  yaw: 11,
 };
 const BASELINE_MAX_GAZE_SPREAD = {
-  pitch: 7.5,
-  yaw: 8,
+  pitch: 10,
+  yaw: 10,
 };
 const EVENT_LABELS = {
   face_not_detected: "Face Missing",
@@ -136,13 +137,26 @@ const getIdentityLabel = (status) => {
   return "Pending";
 };
 
+const getAngleDelta = (current, baseline) => {
+  const shiftedDelta = Number(current) - Number(baseline) + 180;
+  return ((shiftedDelta % 360) + 360) % 360 - 180;
+};
+
+const getBaselineSampleDelta = (key, current, baseline) => {
+  if (ANGLE_BASELINE_SAMPLE_KEYS.has(key)) {
+    return Math.abs(getAngleDelta(current, baseline));
+  }
+
+  return Math.abs(Number(current) - Number(baseline));
+};
+
 const isStableAgainstPrevious = (previousSample, nextSample, maxDeltas) => {
   if (!previousSample) {
     return true;
   }
 
   return Object.entries(maxDeltas).every(([key, maxDelta]) => {
-    return Math.abs(Number(nextSample[key]) - Number(previousSample[key])) <= maxDelta;
+    return getBaselineSampleDelta(key, nextSample[key], previousSample[key]) <= maxDelta;
   });
 };
 
@@ -162,9 +176,19 @@ const summarizeSamples = (samples, keys) => {
     return (sorted[middle - 1] + sorted[middle]) / 2;
   };
 
+  const circularMean = (values) => {
+    const radians = values.map((value) => (Number(value) * Math.PI) / 180);
+    const sinTotal = radians.reduce((total, value) => total + Math.sin(value), 0);
+    const cosTotal = radians.reduce((total, value) => total + Math.cos(value), 0);
+    return (Math.atan2(sinTotal / values.length, cosTotal / values.length) * 180) / Math.PI;
+  };
+
   const summarized = {};
   keys.forEach((key) => {
-    summarized[key] = median(samples.map((sample) => sample[key]));
+    const values = samples.map((sample) => sample[key]);
+    summarized[key] = ANGLE_BASELINE_SAMPLE_KEYS.has(key)
+      ? circularMean(values)
+      : median(values);
   });
 
   return summarized;
@@ -178,6 +202,18 @@ const measureSampleSpread = (samples, keys) => {
   const spread = {};
   keys.forEach((key) => {
     const values = samples.map((sample) => Number(sample[key]));
+
+    if (ANGLE_BASELINE_SAMPLE_KEYS.has(key)) {
+      spread[key] = values.reduce((maxSpread, value, index) => {
+        const pairSpread = values.slice(index + 1).reduce((maxPairSpread, nextValue) => {
+          return Math.max(maxPairSpread, getBaselineSampleDelta(key, value, nextValue));
+        }, 0);
+
+        return Math.max(maxSpread, pairSpread);
+      }, 0);
+      return;
+    }
+
     spread[key] = Math.max(...values) - Math.min(...values);
   });
 
