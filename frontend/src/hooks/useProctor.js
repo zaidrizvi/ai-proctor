@@ -2,13 +2,13 @@ import { useRef, useEffect, useCallback } from "react";
 import { createJpegBlobFromSource } from "../utils/imageCapture.js";
 import { postMlMultipart } from "../utils/mlClient.js";
 
-const NO_FACE_STREAK_TO_ALERT = 2;
+const NO_FACE_STREAK_TO_ALERT = 3;
 const FACE_RECOVERY_STREAK = 2;
 const MULTIPLE_FACES_STREAK_TO_ALERT = 2;
 const OBJECT_MULTIPLE_FACES_STREAK_TO_ALERT = 2;
 const PRESENCE_MULTIPLE_FACES_CONFIRM_STREAK = 2;
-const HEAD_TURN_STREAK_TO_ALERT = 2;
-const STRONG_HEAD_TURN_STREAK_TO_ALERT = 1;
+const HEAD_TURN_STREAK_TO_ALERT = 3;
+const STRONG_HEAD_TURN_STREAK_TO_ALERT = 2;
 const HEAD_TURN_RECOVERY_STREAK = 2;
 const GAZE_AWAY_STREAK_TO_ALERT = 2;
 const STRONG_GAZE_AWAY_STREAK_TO_ALERT = 1;
@@ -18,6 +18,7 @@ const FACE_MISMATCH_STREAK_TO_ALERT = 2;
 const FACE_MATCH_RECOVERY_STREAK = 2;
 const HEAD_TURN_ALERT_COOLDOWN_MS = 2000;
 const GAZE_AWAY_ALERT_COOLDOWN_MS = 2200;
+const HEAD_GAZE_DUPLICATE_SUPPRESSION_MS = 3000;
 const OBJECT_DETECTED_STREAK_TO_ALERT = 2;
 const PRIORITY_OBJECT_DETECTED_STREAK_TO_ALERT = 1;
 const OBJECT_ALERT_COOLDOWN_MS = 2000;
@@ -31,15 +32,15 @@ const MULTIPLE_FACES_FACE_PULSE_INTERVAL_MS = 700;
 const MULTIPLE_FACES_OBJECT_PULSE_INTERVAL_MS = 850;
 const MULTIPLE_FACES_STALE_DECAY_MS = 2000;
 const FACE_MISMATCH_ALERT_COOLDOWN_MS = 2000;
-const MIN_HEAD_POSE_QUALITY_FOR_ALERT = 0.46;
-const MIN_HEAD_POSE_QUALITY_FOR_NO_FACE_GRACE = 0.42;
-const MIN_FACE_CONFIDENCE_FOR_STABLE_ALERTS = 0.54;
-const MIN_FACE_AREA_RATIO_FOR_STABLE_ALERTS = 0.024;
-const MIN_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.02;
-const MIN_GAZE_SCORE_FOR_ALERT = 0.98;
-const STRONG_GAZE_SCORE_FOR_ALERT = 1.16;
-const MIN_GAZE_FACE_CONFIDENCE_FOR_ALERT = 0.5;
-const MIN_GAZE_FACE_AREA_RATIO_FOR_ALERT = 0.024;
+const MIN_HEAD_POSE_QUALITY_FOR_ALERT = 0.5;
+const MIN_HEAD_POSE_QUALITY_FOR_NO_FACE_GRACE = 0.46;
+const MIN_FACE_CONFIDENCE_FOR_STABLE_ALERTS = 0.5;
+const MIN_FACE_AREA_RATIO_FOR_STABLE_ALERTS = 0.04;
+const MIN_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.15;
+const MIN_GAZE_SCORE_FOR_ALERT = 1.02;
+const STRONG_GAZE_SCORE_FOR_ALERT = 1.35;
+const MIN_GAZE_FACE_CONFIDENCE_FOR_ALERT = 0.6;
+const MIN_GAZE_FACE_AREA_RATIO_FOR_ALERT = 0.052;
 const MIN_DOWNWARD_HEAD_PITCH_SCORE_FOR_ALERT = 1.28;
 const MIN_DOWNWARD_HEAD_NOSE_SCORE_FOR_ALERT = 1.18;
 const MIN_DOWNWARD_HEAD_MOVEMENT_SCORE_FOR_ALERT = 1.16;
@@ -49,11 +50,11 @@ const IDENTITY_CONTINUITY_VERIFY_INTERVAL_MS = 1000;
 const IDENTITY_URGENT_VERIFY_INTERVAL_MS = 1500;
 const IDENTITY_MATCH_FRESHNESS_MS = 4500;
 const IDENTITY_COMPROMISE_WINDOW_MS = 2200;
-const DETECTOR_NO_FACE_IDENTITY_GRACE_MS = 450;
-const DESKTOP_CAPTURE_WIDTH = 800;
-const MOBILE_CAPTURE_WIDTH = 720;
-const DESKTOP_JPEG_QUALITY = 0.78;
-const MOBILE_JPEG_QUALITY = 0.78;
+const DETECTOR_NO_FACE_IDENTITY_GRACE_MS = 800;
+const DESKTOP_CAPTURE_WIDTH = 1240;
+const MOBILE_CAPTURE_WIDTH = 800;
+const DESKTOP_JPEG_QUALITY = 0.80;
+const MOBILE_JPEG_QUALITY = 0.80;
 const PRIORITY_SUSPICIOUS_OBJECTS = new Set(["cell phone", "book", "remote"]);
 
 const isLikelyMobileBrowser = () => {
@@ -567,11 +568,14 @@ const useProctor = ({
       const headTurnThreshold = isStrong
         ? STRONG_HEAD_TURN_STREAK_TO_ALERT
         : HEAD_TURN_STREAK_TO_ALERT;
+      const gazeRecentlyAlerted =
+        now - lastAlertAtRef.current.gazeAway < HEAD_GAZE_DUPLICATE_SUPPRESSION_MS;
 
       if (
         streaksRef.current.headTurned >= headTurnThreshold &&
         !activeFlagsRef.current.headTurned &&
-        now - lastAlertAtRef.current.headTurned >= HEAD_TURN_ALERT_COOLDOWN_MS
+        now - lastAlertAtRef.current.headTurned >= HEAD_TURN_ALERT_COOLDOWN_MS &&
+        !gazeRecentlyAlerted
       ) {
         activeFlagsRef.current.headTurned = true;
         lastAlertAtRef.current.headTurned = now;
@@ -670,11 +674,14 @@ const useProctor = ({
       const gazeThreshold = isStrong
         ? STRONG_GAZE_AWAY_STREAK_TO_ALERT
         : GAZE_AWAY_STREAK_TO_ALERT;
+      const headRecentlyAlerted =
+        now - lastAlertAtRef.current.headTurned < HEAD_GAZE_DUPLICATE_SUPPRESSION_MS;
 
       if (
         streaksRef.current.gazeAway >= gazeThreshold &&
         !activeFlagsRef.current.gazeAway &&
-        now - lastAlertAtRef.current.gazeAway >= GAZE_AWAY_ALERT_COOLDOWN_MS
+        now - lastAlertAtRef.current.gazeAway >= GAZE_AWAY_ALERT_COOLDOWN_MS &&
+        !headRecentlyAlerted
       ) {
         activeFlagsRef.current.gazeAway = true;
         lastAlertAtRef.current.gazeAway = now;
@@ -711,7 +718,9 @@ const useProctor = ({
       return;
     }
 
-    const gazeScore = Number(gaze.combined_gaze_score || gaze.gaze_score || 0);
+    const rawGazeScore = Number(gaze.gaze_score || 0);
+    const combinedGazeScore = Number(gaze.combined_gaze_score || 0);
+    const gazeScore = Math.max(rawGazeScore, combinedGazeScore);
     const lookingAway = gaze.event === "gaze_away";
 
     if (lookingAway && gazeScore >= MIN_GAZE_SCORE_FOR_ALERT) {

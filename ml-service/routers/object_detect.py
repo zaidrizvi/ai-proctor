@@ -79,26 +79,26 @@ DETECTION_DEDUP_IOU_THRESHOLD = 0.55
 SUSPICIOUS_OBJECTS = {
     "cell phone": {
         "severity": "high",
-        "min_detection_confidence": 0.14,
+        "min_detection_confidence": 0.16,
         "min_detection_area_ratio": 0.0032,
-        "min_confidence": 0.42,
+        "min_confidence": 0.55,
         "min_area_ratio": 0.004,
     },
     "book": {
         "severity": "medium",
-        "min_detection_confidence": 0.14,
+        "min_detection_confidence": 0.16,
         "min_detection_area_ratio": 0.008,
-        "min_confidence": 0.32,
+        "min_confidence": 0.42,
         "min_area_ratio": 0.01,
     },
     "remote": {
         "severity": "low",
-        "min_detection_confidence": 0.12,
+        "min_detection_confidence": 0.14,
         "min_detection_area_ratio": 0.0025,
-        "min_confidence": 0.46,
+        "min_confidence": 0.52,
         "min_area_ratio": 0.003,
     },
-    "tv": {"severity": "medium", "min_confidence": 0.55, "min_area_ratio": 0.08},
+    "tv": {"severity": "medium", "min_confidence": 0.60, "min_area_ratio": 0.08},
 }
 
 

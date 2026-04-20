@@ -28,6 +28,8 @@ export const createJpegBlobFromSource = (
       return;
     }
 
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.drawImage(source, 0, 0, resolvedCanvas.width, resolvedCanvas.height);
     resolvedCanvas.toBlob((blob) => {
       if (!blob) {

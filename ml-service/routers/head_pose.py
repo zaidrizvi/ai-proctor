@@ -24,14 +24,14 @@ _model_path = os.getenv(
     ),
 )
 
-ABS_YAW_THRESHOLD = 24
-ABS_PITCH_THRESHOLD = 17
+ABS_YAW_THRESHOLD = 26
+ABS_PITCH_THRESHOLD = 18
 ABS_NOSE_OFFSET_THRESHOLD = 0.18
 ABS_ROLL_THRESHOLD = 24
 ABS_DOWNWARD_PITCH_THRESHOLD = 24
 ABS_DOWNWARD_NOSE_OFFSET_THRESHOLD = 0.095
 
-DELTA_YAW_THRESHOLD = 12
+DELTA_YAW_THRESHOLD = 13
 DELTA_PITCH_THRESHOLD = 16
 DELTA_NOSE_OFFSET_THRESHOLD = 0.16
 DELTA_ROLL_THRESHOLD = 20
@@ -534,20 +534,20 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
             ABS_DOWNWARD_PITCH_THRESHOLD,
             ABS_DOWNWARD_NOSE_OFFSET_THRESHOLD,
         )
-        clear_yaw_turn = abs(pose["yaw"]) >= 24.0
+        clear_yaw_turn = abs(pose["yaw"]) >= 28.0
         obvious_turn = (
             pose["pose_quality"] >= 0.44 and
             (
-                abs(pose["yaw"]) >= 30.0 or
+                abs(pose["yaw"]) >= 34.0 or
                 (
-                    abs(pose["yaw"]) >= 22.0 and
-                    abs(pose["nose_offset_x"]) >= 0.145
+                    abs(pose["yaw"]) >= 26.0 and
+                    abs(pose["nose_offset_x"]) >= 0.16
                 )
             )
         )
-        strong_signal = max(metrics.values()) >= 1.24
+        strong_signal = max(metrics.values()) >= 1.28
         multi_signal = sum(value >= 1.0 for value in metrics.values()) >= 2
-        lateral_signal = metrics["yaw"] >= 0.92 or metrics["nose_x"] >= 0.86
+        lateral_signal = metrics["yaw"] >= 1.02 or metrics["nose_x"] >= 0.92
         combined_score = (
             metrics["yaw"] * 0.72 +
             metrics["nose_x"] * 0.2 +
@@ -560,7 +560,7 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
                 downward_signal or
                 (
                     lateral_signal and
-                    (strong_signal or multi_signal or combined_score >= 1.12)
+                    (strong_signal or multi_signal or combined_score >= 1.2)
                 )
             )
         )
@@ -580,20 +580,20 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
             DELTA_DOWNWARD_PITCH_THRESHOLD,
             DELTA_DOWNWARD_NOSE_OFFSET_THRESHOLD,
         )
-        clear_yaw_turn = abs(deltas["yaw_delta"]) >= 16.0
+        clear_yaw_turn = abs(deltas["yaw_delta"]) >= 20.0
         obvious_turn = (
             pose["pose_quality"] >= 0.4 and
             (
-                abs(deltas["yaw_delta"]) >= 22.0 or
+                abs(deltas["yaw_delta"]) >= 26.0 or
                 (
-                    abs(deltas["yaw_delta"]) >= 16.0 and
-                    abs(deltas["nose_offset_x_delta"]) >= 0.11
+                    abs(deltas["yaw_delta"]) >= 20.0 and
+                    abs(deltas["nose_offset_x_delta"]) >= 0.13
                 )
             )
         )
-        strong_signal = max(metrics.values()) >= 1.18
+        strong_signal = max(metrics.values()) >= 1.25
         multi_signal = sum(value >= 1.0 for value in metrics.values()) >= 2
-        lateral_signal = metrics["yaw"] >= 0.94 or metrics["nose_x"] >= 0.88
+        lateral_signal = metrics["yaw"] >= 1.05 or metrics["nose_x"] >= 0.94
         combined_score = (
             metrics["yaw"] * 0.74 +
             metrics["nose_x"] * 0.18 +
@@ -606,7 +606,7 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
                 downward_signal or
                 (
                     lateral_signal and
-                    (strong_signal or multi_signal or combined_score >= 1.08)
+                    (strong_signal or multi_signal or combined_score >= 1.2)
                 )
             )
         )
@@ -620,7 +620,7 @@ def classify_looking_away(pose: dict, baseline: HeadPoseBaseline | None):
         signal_reasons.append("clear_yaw_turn")
     if downward_signal:
         signal_reasons.append(f"downward:{downward_debug['trigger_reason']}")
-    if lateral_signal and (strong_signal or multi_signal or combined_score >= 1.08):
+    if lateral_signal and (strong_signal or multi_signal or combined_score >= 1.2):
         signal_reasons.append("lateral_combined")
 
     debug = {

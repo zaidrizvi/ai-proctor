@@ -35,12 +35,12 @@ MODEL_DEVICE = os.getenv("L2CS_DEVICE", "cpu")
 NUM_BINS = 90
 BIN_WIDTH_DEGREES = 4.0
 BIN_START_DEGREES = -180.0
-FACE_CONFIDENCE_THRESHOLD = 0.5
-MIN_FACE_AREA_RATIO = 0.024
-ABS_YAW_THRESHOLD = 24.0
-ABS_PITCH_THRESHOLD = 18.0
-DELTA_YAW_THRESHOLD = 12.0
-DELTA_PITCH_THRESHOLD = 10.0
+FACE_CONFIDENCE_THRESHOLD = 0.55
+MIN_FACE_AREA_RATIO = 0.050
+ABS_YAW_THRESHOLD = 26.0
+ABS_PITCH_THRESHOLD = 20.0
+DELTA_YAW_THRESHOLD = 13.0
+DELTA_PITCH_THRESHOLD = 11.0
 DELTA_YAW_DEADZONE = 2.0
 DELTA_PITCH_DEADZONE = 2.0
 TRACKER_STATE_TTL_SECONDS = 4.5
@@ -433,10 +433,10 @@ def detect_gaze(frame: np.ndarray, baseline: GazeBaseline | None = None, tracker
     pitch_score = abs(pitch_measure) / (DELTA_PITCH_THRESHOLD if baseline_applied else ABS_PITCH_THRESHOLD)
     combined_score = (yaw_score * 0.58) + (pitch_score * 0.42)
     looking_away = (
-        yaw_score >= 1.0 or
-        pitch_score >= 1.06 or
-        (yaw_score >= 0.82 and pitch_score >= 0.82) or
-        combined_score >= 0.98
+        yaw_score >= 1.08 or
+        pitch_score >= 1.12 or
+        (yaw_score >= 0.90 and pitch_score >= 0.90) or
+        combined_score >= 1.06
     )
 
     return {
