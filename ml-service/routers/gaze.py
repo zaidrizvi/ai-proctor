@@ -271,6 +271,10 @@ def _apply_delta_deadzone(value: float, deadzone: float) -> float:
     return 0.0 if abs(value) < deadzone else value
 
 
+def _angle_delta(current: float, baseline: float) -> float:
+    return ((current - baseline + 180.0) % 360.0) - 180.0
+
+
 def _cleanup_tracker_states(now: float):
     expired_ids = [
         tracker_id
@@ -381,9 +385,9 @@ def predict_gaze(face_rgb: np.ndarray):
     softmax = torch.nn.Softmax(dim=1)
 
     with torch.no_grad():
-        gaze_pitch_logits, gaze_yaw_logits = model(face_tensor)
-        pitch_predicted = softmax(gaze_pitch_logits)
+        gaze_yaw_logits, gaze_pitch_logits = model(face_tensor)
         yaw_predicted = softmax(gaze_yaw_logits)
+        pitch_predicted = softmax(gaze_pitch_logits)
         pitch = torch.sum(pitch_predicted * idx_tensor, dim=1) * BIN_WIDTH_DEGREES + BIN_START_DEGREES
         yaw = torch.sum(yaw_predicted * idx_tensor, dim=1) * BIN_WIDTH_DEGREES + BIN_START_DEGREES
 
@@ -414,8 +418,14 @@ def detect_gaze(frame: np.ndarray, baseline: GazeBaseline | None = None, tracker
     baseline_applied = baseline is not None
 
     if baseline is not None:
-        yaw_delta = _apply_delta_deadzone(yaw - baseline.yaw, DELTA_YAW_DEADZONE)
-        pitch_delta = _apply_delta_deadzone(pitch - baseline.pitch, DELTA_PITCH_DEADZONE)
+        yaw_delta = _apply_delta_deadzone(
+            _angle_delta(yaw, baseline.yaw),
+            DELTA_YAW_DEADZONE,
+        )
+        pitch_delta = _apply_delta_deadzone(
+            _angle_delta(pitch, baseline.pitch),
+            DELTA_PITCH_DEADZONE,
+        )
 
     yaw_measure = yaw_delta if baseline_applied else yaw
     pitch_measure = pitch_delta if baseline_applied else pitch

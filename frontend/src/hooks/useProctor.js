@@ -56,14 +56,6 @@ const DESKTOP_JPEG_QUALITY = 0.78;
 const MOBILE_JPEG_QUALITY = 0.78;
 const PRIORITY_SUSPICIOUS_OBJECTS = new Set(["cell phone", "book", "remote"]);
 
-const createPerTabTrackerId = () => {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-
-  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-};
-
 const isLikelyMobileBrowser = () => {
   if (typeof navigator === "undefined") {
     return false;
@@ -97,7 +89,6 @@ const useProctor = ({
   verifyIntervalMs = 30000,
 }) => {
   const intervalRef = useRef(null);
-  const fallbackTrackerIdRef = useRef("");
   const criticalAnalysisInFlightRef = useRef(false);
   const objectAnalysisInFlightRef = useRef(false);
   const verifyAnalysisInFlightRef = useRef(false);
@@ -177,11 +168,7 @@ const useProctor = ({
     total_checks: 0,
   });
 
-  if (!fallbackTrackerIdRef.current) {
-    fallbackTrackerIdRef.current = createPerTabTrackerId();
-  }
-
-  const activeTrackerId = sessionId || `${examId || "exam"}-${fallbackTrackerIdRef.current}`;
+  const activeTrackerId = sessionId;
 
   const isTokenActive = useCallback((token) => {
     return token === lifecycleTokenRef.current && Boolean(enabled) && Boolean(sessionId);

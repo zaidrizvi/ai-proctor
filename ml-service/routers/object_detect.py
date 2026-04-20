@@ -326,11 +326,11 @@ def _update_temporal_phone_state(tracker_id: str, phone_detection: dict | None) 
             "iou_threshold": TEMPORAL_PHONE_IOU_THRESHOLD,
             "recent_frames": 1,
             "positive_frames": 1 if phone_detected else 0,
-            "confirmed": False,
+            "confirmed": phone_detected,
             "current_frame_detected": phone_detected,
             "history": [1 if phone_detected else 0],
             "tracking_enabled": False,
-            "reason": "missing_tracker_id",
+            "reason": "missing_tracker_id_fallback_current_frame",
         }
 
     with _object_tracker_lock:
@@ -690,7 +690,9 @@ async def detect_objects(request: Request):
         )
         if "cell phone" in suspicious_map:
             suspicious_map["cell phone"]["temporal_detection"] = temporal_phone_detection
-            if not temporal_phone_detection["confirmed"]:
+            should_require_temporal_confirmation = temporal_phone_detection["tracking_enabled"]
+
+            if should_require_temporal_confirmation and not temporal_phone_detection["confirmed"]:
                 suspicious_rejection_debug.append({
                     "stage": "temporal_gate",
                     "object": "cell phone",

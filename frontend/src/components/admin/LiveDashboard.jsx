@@ -174,33 +174,36 @@ const LiveDashboard = () => {
     socket.on("student-joined", ({ examId: eventExamId, userId }) => {
       if (!selectedExam || eventExamId !== selectedExam) return;
 
+      const normalizedUserId = String(userId);
       setStudents((prev) => ({
         ...prev,
-        [userId]: { ...(prev[userId] || {}), online: true },
+        [normalizedUserId]: { ...(prev[normalizedUserId] || {}), online: true },
       }));
     });
 
     socket.on("student-left", ({ examId: eventExamId, userId }) => {
       if (!selectedExam || eventExamId !== selectedExam) return;
 
+      const normalizedUserId = String(userId);
       setStudents((prev) => ({
         ...prev,
-        [userId]: { ...(prev[userId] || {}), online: false },
+        [normalizedUserId]: { ...(prev[normalizedUserId] || {}), online: false },
       }));
     });
 
     socket.on("receive-alert", ({ examId: eventExamId, userId, studentName, event }) => {
       if (!selectedExam || eventExamId !== selectedExam) return;
 
-      const alert = { userId, studentName, event, time: new Date() };
+      const normalizedUserId = String(userId);
+      const alert = { userId: normalizedUserId, studentName, event, time: new Date() };
       setRecentAlerts((prev) => [alert, ...prev].slice(0, 20));
 
       setStudents((prev) => ({
         ...prev,
-        [userId]: {
-          ...(prev[userId] || { name: studentName }),
-          alerts: [event, ...(prev[userId]?.alerts || [])].slice(0, 5),
-          flaggedEventsCount: (prev[userId]?.flaggedEventsCount || 0) + 1,
+        [normalizedUserId]: {
+          ...(prev[normalizedUserId] || { name: studentName }),
+          alerts: [event, ...(prev[normalizedUserId]?.alerts || [])].slice(0, 5),
+          flaggedEventsCount: (prev[normalizedUserId]?.flaggedEventsCount || 0) + 1,
         },
       }));
     });
@@ -208,18 +211,20 @@ const LiveDashboard = () => {
     socket.on("receive-suspicion", ({ examId: eventExamId, userId, score }) => {
       if (!selectedExam || eventExamId !== selectedExam) return;
 
+      const normalizedUserId = String(userId);
       setStudents((prev) => ({
         ...prev,
-        [userId]: { ...(prev[userId] || {}), suspicionScore: score },
+        [normalizedUserId]: { ...(prev[normalizedUserId] || {}), suspicionScore: score },
       }));
     });
 
     socket.on("session-terminated", ({ examId: eventExamId, userId }) => {
       if (!selectedExam || eventExamId !== selectedExam) return;
 
+      const normalizedUserId = String(userId);
       setStudents((prev) => ({
         ...prev,
-        [userId]: { ...(prev[userId] || {}), status: "terminated", online: false },
+        [normalizedUserId]: { ...(prev[normalizedUserId] || {}), status: "terminated", online: false },
       }));
     });
 
