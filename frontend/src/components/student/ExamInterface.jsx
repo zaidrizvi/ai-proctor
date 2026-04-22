@@ -50,7 +50,6 @@ const EVENT_LOG_COOLDOWNS_MS = {
   ml_service_unavailable: 30000,
 };
 const SHOW_STUDENT_DEBUG_UI = false;
-const SHOW_STUDENT_ML_PREVIEW = true;
 const LIVE_ALERT_LIMIT = 4;
 const BASELINE_MIN_POSE_QUALITY = 0.5;
 const BASELINE_RETRY_DELAY_MS = 2000;
@@ -349,8 +348,13 @@ const WebcamMonitor = ({
             <p className="text-xs text-red-300">Camera denied</p>
           </div>
         ) : (
-          <video ref={videoRef} autoPlay muted playsInline
-            className="aspect-video w-full bg-[var(--app-bg)] object-contain" />
+          <video
+            ref={videoRef}
+            autoPlay
+            muted
+            playsInline
+            className="aspect-video w-full bg-[var(--app-bg)] object-contain"
+          />
         )}
       </div>
       <div className={`absolute left-2 top-2 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
@@ -438,8 +442,6 @@ const ExamInterface = () => {
   const pendingProgressRef = useRef(null);
   const answersRef = useRef({});
   const currentQRef = useRef(0);
-  const lastMlFramePreviewAtRef = useRef(0);
-  const mlFramePreviewUrlRef = useRef("");
   const baselineRetryTimeoutRef = useRef(null);
 
   // state
@@ -470,7 +472,6 @@ const ExamInterface = () => {
   const [startReady, setStartReady] = useState(false);
   const [microphonePrepared, setMicrophonePrepared] = useState(false);
   const [liveAlerts, setLiveAlerts] = useState([]);
-  const [mlFramePreview, setMlFramePreview] = useState("");
   const [fullscreenLocked, setFullscreenLocked] = useState(false);
 
   const getRemainingSeconds = useCallback((activeSession, loadedExam) => {
@@ -577,25 +578,6 @@ const ExamInterface = () => {
     if (eventType === "face_not_detected") faceNotDetectedRef.current += 1;
     logProctorEvent(eventType, severity, description);
   }, [logProctorEvent]);
-
-  const handleMlFramePreview = useCallback((frame) => {
-    if (!SHOW_STUDENT_ML_PREVIEW) {
-      return;
-    }
-
-    const now = Date.now();
-    if (now - lastMlFramePreviewAtRef.current < 800) {
-      return;
-    }
-
-    lastMlFramePreviewAtRef.current = now;
-    if (mlFramePreviewUrlRef.current) {
-      URL.revokeObjectURL(mlFramePreviewUrlRef.current);
-    }
-    const previewUrl = URL.createObjectURL(frame);
-    mlFramePreviewUrlRef.current = previewUrl;
-    setMlFramePreview(previewUrl);
-  }, []);
 
   const persistAttentionBaseline = useCallback((headBaseline, nextGazeBaseline, debug = null) => {
     const storageKey = getHeadPoseBaselineStorageKey(examId, studentId);
@@ -725,7 +707,6 @@ const ExamInterface = () => {
     headMovementEnabled,
     objectDetectionEnabled,
     onAlert: handleWebcamAlert,
-    onMlFrame: handleMlFramePreview,
     intervalMs: 800,
     verifyIntervalMs: 30000,
   });
@@ -808,25 +789,6 @@ const ExamInterface = () => {
   useEffect(() => {
     currentQRef.current = currentQ;
   }, [currentQ]);
-
-  useEffect(() => {
-    if (examReady && !submitted) return;
-    if (mlFramePreviewUrlRef.current) {
-      URL.revokeObjectURL(mlFramePreviewUrlRef.current);
-      mlFramePreviewUrlRef.current = "";
-    }
-    setMlFramePreview("");
-    lastMlFramePreviewAtRef.current = 0;
-  }, [examReady, submitted]);
-
-  useEffect(() => {
-    return () => {
-      if (mlFramePreviewUrlRef.current) {
-        URL.revokeObjectURL(mlFramePreviewUrlRef.current);
-        mlFramePreviewUrlRef.current = "";
-      }
-    };
-  }, []);
 
   const loadFaceReference = async (settingsOverride = null) => {
     const effectiveSettings = resolveExamProctorSettings(
@@ -2232,7 +2194,7 @@ const ExamInterface = () => {
 
         {/* right sidebar */}
         <div className="theme-panel theme-scrollbar flex w-full flex-col gap-3 overflow-hidden rounded-[32px] p-4 lg:w-[340px] lg:sticky lg:top-[89px] lg:max-h-[calc(100vh-105px)]">
-          {(visualMonitoringEnabled || audioDetectionEnabled || (SHOW_STUDENT_ML_PREVIEW && mlFramePreview)) && (
+          {(visualMonitoringEnabled || audioDetectionEnabled) && (
             <div className="rounded-[28px] border p-3" style={{ borderColor: "var(--app-border)", background: "var(--panel-strong)" }}>
               <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-muted)]">
                 Proctor Monitor
@@ -2282,27 +2244,6 @@ const ExamInterface = () => {
                     );
                   }}
                 />
-              )}
-              {SHOW_STUDENT_ML_PREVIEW && mlFramePreview && (
-              <div className="mt-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-200">
-                    ML Frame Preview
-                  </p>
-                  <span className="text-[10px] text-cyan-200/70">
-                    Sent to ML
-                  </span>
-                </div>
-                <img
-                  src={mlFramePreview}
-                  alt="Frame sent to ML"
-                  className="aspect-video w-full rounded-xl border border-cyan-500/20 object-cover"
-                  style={{ background: "var(--panel-bg)" }}
-                />
-                <p className="mt-2 text-[10px] leading-relaxed text-cyan-100/70">
-                  This is the compressed frame payload currently being posted to the ML endpoints.
-                </p>
-              </div>
               )}
               {SHOW_STUDENT_DEBUG_UI && liveAlerts.length > 0 && (
                 <div className="mt-3 space-y-2">
